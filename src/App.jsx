@@ -1,30 +1,50 @@
-// src/App.jsx - Aplicação integrada otimizada
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+// src/App.jsx - Aplicação principal integrada
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useOptimizedAudioCapture } from './useOptimizedAudioCapture';
 import { useSmartCache } from './useSmartCache';
 import { useParallelQueue } from './useParallelQueue';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
+import { JobProfileManager } from './components/JobProfileManager';
 import { api } from './api';
 
-// Componentes
-function MetricsBar({ metrics, cost, cacheStats, latency }) {
+// Subcomponentes
+function MetricsPanel({ metrics, cost, cacheStats, latency, tailored }) {
   return (
-    <div className="metrics-bar">
-      <div className="metric">
-        <span className="metric-value">{latency}ms</span>
-        <span className="metric-label">Latency</span>
+    <div className="metrics-panel">
+      <div className="metric-group">
+        <div className="metric">
+          <span className="metric-value">{latency}ms</span>
+          <span className="metric-label">Last Latency</span>
+        </div>
+        <div className="metric">
+          <span className="metric-value">${cost.toFixed(3)}</span>
+          <span className="metric-label">Session Cost</span>
+        </div>
+        <div className="metric">
+          <span className="metric-value">{cacheStats.memoryItems + cacheStats.storageItems}</span>
+          <span className="metric-label">Cached</span>
+        </div>
+        <div className="metric">
+          <span className="metric-value">{cacheStats.hitRate}%</span>
+          <span className="metric-label">Cache Hit</span>
+        </div>
       </div>
-      <div className="metric">
-        <span className="metric-value">${cost.toFixed(3)}</span>
-        <span className="metric-label">Session</span>
-      </div>
-      <div className="metric">
-        <span className="metric-value">{cacheStats.memoryItems}</span>
-        <span className="metric-label">Cached</span>
-      </div>
-      <div className="metric">
-        <span className="metric-value">{(metrics.bytesSent / 1024).toFixed(0)}KB</span>
-        <span className="metric-label">Audio</span>
+      
+      <div className="metric-group secondary">
+        <div className="metric">
+          <span className="metric-value">{(metrics.bytesSent / 1024).toFixed(0)}KB</span>
+          <span className="metric-label">Audio Sent</span>
+        </div>
+        <div className="metric">
+          <span className="metric-value">{metrics.chunksSent}</span>
+          <span className="metric-label">Chunks</span>
+        </div>
+        {tailored !== null && (
+          <div className={`metric ${tailored ? 'tailored' : ''}`}>
+            <span className="metric-value">{tailored ? '✓' : '○'}</span>
+            <span className="metric-label">{tailored ? 'Tailored' : 'Generic'}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -34,46 +54,60 @@ function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
-    await navigator.clipboard.writeText(qa.answer);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(qa.answer);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
   };
 
   return (
-    <div className={`qa-card ${qa.cached ? 'cached' : ''} ${isStarred ? 'starred' : ''}`}>
+    <div className={`qa-card ${qa.cached ? 'cached' : ''} ${qa.tailored ? 'tailored' : ''} ${isStarred ? 'starred' : ''}`}>
       <div className="qa-header" onClick={onToggle}>
-        <span className="qa-num">#{qa.id}</span>
-        <span className="qa-q">{qa.question.slice(0, 60)}...</span>
+        <span className="qa-number">#{qa.id}</span>
+        <span className="qa-preview">{qa.question}</span>
         <div className="qa-badges">
-          {qa.cached && <span className="badge cache">CACHE</span>}
-          {qa.processingTimeMs > 0 && (
-            <span className="badge time">{qa.processingTimeMs}ms</span>
-          )}
-          <button onClick={(e) => { e.stopPropagation(); onStar(); }}>
+          {qa.cached && <span className="badge cache" title="From cache">⚡</span>}
+          {qa.tailored && <span className="badge tailored" title="Tailored to job">🎯</span>}
+          <button 
+            className={`star-btn ${isStarred ? 'active' : ''}`}
+            onClick={(e) => { e.stopPropagation(); onStar(); }}
+          >
             {isStarred ? '★' : '☆'}
           </button>
-          <span>{isExpanded ? '▼' : '▶'}</span>
+          <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
         </div>
       </div>
       
       {isExpanded && (
         <div className="qa-body">
-          <div className="qa-section">
-            <strong>Q:</strong> {qa.question}
+          <div className="qa-question">
+            <strong>Question:</strong>
+            <p>{qa.question}</p>
           </div>
-          <div className="qa-section answer">
+          
+          <div className="qa-answer">
             <div className="answer-header">
-              <strong>A:</strong>
-              <button onClick={copy} className={copied ? 'copied' : ''}>
+              <strong>Answer:</strong>
+              <button 
+                className={`copy-btn ${copied ? 'copied' : ''}`}
+                onClick={copy}
+              >
                 {copied ? '✓ Copied!' : 'Copy'}
               </button>
             </div>
-            <div className="markdown-body">
+            <div className="answer-content">
               {qa.answer.split('\n').map((line, i) => (
                 <p key={i}>{line}</p>
               ))}
             </div>
-            {qa.cost && <span className="cost-tag">Cost: ${qa.cost}</span>}
+            <div className="answer-meta">
+              {qa.processingTimeMs > 0 && <span>{qa.processingTimeMs}ms</span>}
+              {qa.cost && <span>${qa.cost}</span>}
+              {qa.tokens && <span>{qa.tokens.input}→{qa.tokens.output} tokens</span>}
+            </div>
           </div>
         </div>
       )}
@@ -81,63 +115,115 @@ function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
   );
 }
 
+function StealthMode({ status, elapsed, qaCount, cost, currentQ, onPause, onResume, onStop, onExpand }) {
+  const formatTime = (s) => {
+    const m = Math.floor(s / 60).toString().padStart(2, '0');
+    const sec = (s % 60).toString().padStart(2, '0');
+    return `${m}:${sec}`;
+  };
+
+  return (
+    <div className="stealth-container">
+      <div className="stealth-widget">
+        <div className={`status-indicator ${status}`} />
+        <span className="stealth-timer">{formatTime(elapsed)}</span>
+        <span className="stealth-count">{qaCount}Q</span>
+        <span className="stealth-cost">${cost.toFixed(2)}</span>
+        
+        <div className="stealth-controls">
+          <button onClick={status === 'recording' ? onPause : onResume}>
+            {status === 'recording' ? '⏸' : '▶'}
+          </button>
+          <button onClick={onExpand} title="Expand">⛶</button>
+          <button onClick={onStop} className="danger" title="Stop">⏹</button>
+        </div>
+      </div>
+      
+      {currentQ && (
+        <div className="stealth-question">
+          <span className="label">Detected:</span>
+          <span className="text">{currentQ}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Main App
 export default function App() {
-  // Estados
+  // Estados principais
   const [sessionId, setSessionId] = useState(null);
-  const [active, setActive] = useState(false);
+  const [sessionActive, setSessionActive] = useState(false);
   const [qaList, setQaList] = useState([]);
-  const [starred, setStarred] = useState(new Set());
-  const [currentQ, setCurrentQ] = useState('');
+  const [starredIds, setStarredIds] = useState(new Set());
+  const [currentTranscription, setCurrentTranscription] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [expanded, setExpanded] = useState(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [source, setSource] = useState('microphone');
+  const [expandedQA, setExpandedQA] = useState(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [audioSource, setAudioSource] = useState('microphone');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState(null);
-  const [stealth, setStealth] = useState(false);
+  const [stealthMode, setStealthMode] = useState(false);
+  const [showJobManager, setShowJobManager] = useState(false);
+  
+  // Job context
+  const [selectedJob, setSelectedJob] = useState(null);
+  const [lastTailored, setLastTailored] = useState(null);
+  
+  // Métricas
   const [sessionCost, setSessionCost] = useState(0);
   const [lastLatency, setLastLatency] = useState(0);
 
   // Refs
-  const idCounter = useRef(0);
+  const qaIdCounter = useRef(0);
   const scrollRef = useRef(null);
   const timerRef = useRef(null);
-  const sessionStart = useRef(0);
+  const sessionStartRef = useRef(0);
 
   // Hooks otimizados
-  const { getCached, setCached, getStats: getCacheStats } = useSmartCache();
-  
+  const { getCached, setCached, getStats: getCacheStats, clear: clearCache } = useSmartCache();
+
+  // Carrega job default na montagem
+  useEffect(() => {
+    api.getDefaultJob().then(job => {
+      if (job) setSelectedJob(job);
+    });
+  }, []);
+
+  // Processamento de pergunta
   const processQuestion = useCallback(async (question, metadata) => {
     const start = performance.now();
     
-    // Verifica cache primeiro
+    // Verifica cache
     const cached = getCached(question);
     if (cached) {
-      const qa = {
-        id: ++idCounter.current,
+      const newQA = {
+        id: ++qaIdCounter.current,
         question,
         answer: cached.answer,
         processingTimeMs: 0,
         cached: true,
+        tailored: false,
         cost: 0,
         timestamp: Date.now()
       };
-      setQaList(prev => [...prev, qa]);
-      setExpanded(qa.id);
-      setLastLatency(performance.now() - start);
+      
+      setQaList(prev => [...prev, newQA]);
+      setExpandedQA(newQA.id);
+      setLastTailored(false);
+      setLastLatency(Math.round(performance.now() - start));
       return;
     }
 
-    // Chama API
     setIsGenerating(true);
     try {
-      const previous = qaList.slice(-3).map(q => ({ 
-        question: q.question, 
-        answer: q.answer.slice(0, 200) 
+      const previousQAs = qaList.slice(-3).map(qa => ({
+        question: qa.question,
+        answer: qa.answer.slice(0, 200)
       }));
-      
-      const result = await api.answer(question, sessionId, previous, false);
+
+      const result = await api.answer(question, sessionId, previousQAs);
       
       // Salva no cache
       setCached(question, result.answer, {
@@ -146,21 +232,23 @@ export default function App() {
         cost: parseFloat(result.cost)
       });
 
-      const qa = {
-        id: ++idCounter.current,
+      const newQA = {
+        id: ++qaIdCounter.current,
         question,
         answer: result.answer,
         processingTimeMs: result.processingTimeMs,
         cached: false,
+        tailored: result.tailored,
         cost: result.cost,
         tokens: result.tokens,
         timestamp: Date.now()
       };
 
-      setQaList(prev => [...prev, qa]);
-      setExpanded(qa.id);
+      setQaList(prev => [...prev, newQA]);
+      setExpandedQA(newQA.id);
       setSessionCost(c => c + parseFloat(result.cost || 0));
-      setLastLatency(performance.now() - start);
+      setLastTailored(result.tailored);
+      setLastLatency(Math.round(performance.now() - start));
       
     } catch (err) {
       setError(err.message);
@@ -169,14 +257,15 @@ export default function App() {
     }
   }, [getCached, setCached, qaList, sessionId]);
 
+  // Fila paralela com debounce
   const { add: queueQuestion, getStats: getQueueStats } = useParallelQueue(processQuestion, {
-    maxConcurrent: 1, // GPT é sequencial por sessão
-    debounceMs: 300
+    maxConcurrent: 1,
+    debounceMs: 250
   });
 
-  // Audio capture otimizado
+  // Captura de áudio otimizada
   const handleAudioChunk = useCallback(async (base64, mimeType, size, estimatedDuration) => {
-    if (!active) return;
+    if (!sessionActive) return;
     
     setIsTranscribing(true);
     const start = performance.now();
@@ -184,79 +273,93 @@ export default function App() {
     try {
       const result = await api.transcribe(base64, mimeType, 'en', estimatedDuration);
       setIsTranscribing(false);
-      setLastLatency(Math.round(performance.now() - start));
       
       if (!result.text || result.text.trim().length < 5) return;
       
       const question = result.text.trim();
-      setCurrentQ(question);
+      setCurrentTranscription(question);
       
-      // Adiciona à fila (com debounce e dedup)
+      // Adiciona à fila
       queueQuestion({ question }, { estimatedCost: result.estimatedCost });
-      setCurrentQ('');
+      setCurrentTranscription('');
       
     } catch (err) {
       setIsTranscribing(false);
       setError(err.message.slice(0, 100));
     }
-  }, [active, queueQuestion]);
+  }, [sessionActive, queueQuestion]);
 
-  const { 
-    status: audioStatus, 
-    error: audioError, 
+  const {
+    status: audioStatus,
+    error: audioError,
     metrics: audioMetrics,
-    startRecording, 
-    pause, 
-    resume, 
-    stop 
-  } = useOptimizedAudioCapture({ 
+    startRecording,
+    pause,
+    resume,
+    stop
+  } = useOptimizedAudioCapture({
     onChunk: handleAudioChunk,
     silenceThreshold: 800,
-    maxChunkMs: 10000
+    maxChunkMs: 12000,
+    minChunkMs: 3000
   });
 
   // Timer
   useEffect(() => {
-    if (active && audioStatus === 'recording') {
+    if (sessionActive && audioStatus === 'recording') {
       timerRef.current = setInterval(() => {
-        setElapsed(Math.floor((Date.now() - sessionStart.current) / 1000));
+        setElapsedTime(Math.floor((Date.now() - sessionStartRef.current) / 1000));
       }, 1000);
     } else {
       clearInterval(timerRef.current);
     }
     return () => clearInterval(timerRef.current);
-  }, [active, audioStatus]);
+  }, [sessionActive, audioStatus]);
 
-  // Scroll
+  // Scroll automático
   useEffect(() => {
-    if (scrollRef.current && !stealth) {
+    if (scrollRef.current && !stealthMode) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [qaList, currentQ, isGenerating, stealth]);
+  }, [qaList, currentTranscription, isGenerating, stealthMode]);
 
-  // Keyboard shortcuts
+  // Atalhos de teclado
   useKeyboardShortcuts({
     onTogglePause: () => audioStatus === 'recording' ? pause() : resume(),
-    onStop: () => stopSession(),
-    onToggleStealth: () => setStealth(s => !s),
-    isActive: active,
+    onStop: stopSession,
+    onToggleStealth: () => setStealthMode(s => !s),
+    isActive: sessionActive,
     captureStatus: audioStatus
   });
 
-  // Session controls
-  const startSession = async (src) => {
+  // Controles de sessão
+  const startSession = async (source) => {
     try {
       setStarting(true);
-      setSource(src);
-      const session = await api.createSession();
+      setAudioSource(source);
+      
+      const session = await api.createSession(selectedJob?.id);
       setSessionId(session.id);
-      setActive(true);
+      setSessionActive(true);
       setQaList([]);
       setSessionCost(0);
-      setElapsed(0);
-      sessionStart.current = Date.now();
-      idCounter.current = 0;
-      await startRecording(src);
+      setElapsedTime(0);
+      setLastTailored(null);
+      sessionStartRef.current = Date.now();
+      qaIdCounter.current = 0;
+      
+      // Atualiza job se veio da sessão
+      if (session.jobName) {
+        setSelectedJob({
+          id: session.jobProfileId,
+          name: session.jobName,
+          company: session.company,
+          key_skills: session.key_skills,
+          seniority: session.seniority
+        });
+      }
+      
+      await startRecording(source);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -266,10 +369,15 @@ export default function App() {
 
   const stopSession = async () => {
     stop();
-    setActive(false);
-    setStealth(false);
+    setSessionActive(false);
+    setStealthMode(false);
+    
     if (sessionId) {
-      try { await api.endSession(sessionId, qaList.length); } catch (e) {}
+      try {
+        await api.endSession(sessionId, qaList.length);
+      } catch (e) {
+        console.warn('Failed to end session:', e);
+      }
     }
   };
 
@@ -281,11 +389,11 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `interview-${sessionId}.md`;
+      a.download = `interview-${sessionId}-${new Date().toISOString().split('T')[0]}.md`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError('Export failed');
+      setError('Export failed: ' + err.message);
     }
   };
 
@@ -297,131 +405,239 @@ export default function App() {
 
   const cacheStats = getCacheStats();
 
-  // Stealth mode
-  if (stealth && active) {
+  // Render modo stealth
+  if (stealthMode && sessionActive) {
     return (
-      <div className="stealth-mode">
-        <div className="stealth-widget">
-          <div className={`status-dot ${audioStatus === 'recording' ? 'recording' : 'paused'}`} />
-          <span className="stealth-timer">{formatTime(elapsed)}</span>
-          <span className="stealth-count">{qaList.length}Q</span>
-          <span className="stealth-cost">${sessionCost.toFixed(2)}</span>
-          <button onClick={() => audioStatus === 'recording' ? pause() : resume()}>
-            {audioStatus === 'recording' ? '⏸' : '▶'}
-          </button>
-          <button onClick={() => setStealth(false)}>⛶</button>
-          <button onClick={stopSession}>⏹</button>
-        </div>
-        {currentQ && <div className="stealth-q">{currentQ}</div>}
-      </div>
+      <StealthMode
+        status={audioStatus}
+        elapsed={elapsedTime}
+        qaCount={qaList.length}
+        cost={sessionCost}
+        currentQ={currentTranscription}
+        onPause={pause}
+        onResume={resume}
+        onStop={stopSession}
+        onExpand={() => setStealthMode(false)}
+      />
     );
   }
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Interview Agent <span className="version">v2.0</span></h1>
-        {active && (
-          <div className="header-stats">
-            <span className="timer">{formatTime(elapsed)}</span>
-            <button className="stealth-btn" onClick={() => setStealth(true)} title="Stealth (Ctrl+H)">
-              👁
+        <div className="header-left">
+          <h1>Interview Agent <span className="version">v2.0</span></h1>
+        </div>
+        
+        <div className="header-center">
+          {selectedJob ? (
+            <div 
+              className="job-indicator" 
+              onClick={() => setShowJobManager(true)}
+              title="Click to change"
+            >
+              <span className="job-name">{selectedJob.name}</span>
+              {selectedJob.company && (
+                <span className="job-company">at {selectedJob.company}</span>
+              )}
+              <span className="job-seniority">{selectedJob.seniority}</span>
+            </div>
+          ) : (
+            <button 
+              className="btn-select-job" 
+              onClick={() => setShowJobManager(true)}
+            >
+              + Select Job Profile
             </button>
-          </div>
-        )}
+          )}
+        </div>
+        
+        <div className="header-right">
+          {sessionActive && (
+            <>
+              <span className="header-timer">{formatTime(elapsedTime)}</span>
+              <button 
+                className="btn-stealth" 
+                onClick={() => setStealthMode(true)}
+                title="Stealth Mode (Ctrl+H)"
+              >
+                👁
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       <main className="app-main" ref={scrollRef}>
-        {!active ? (
+        {!sessionActive ? (
           <div className="start-screen">
-            <h2>Optimized for Speed & Cost</h2>
-            <p>Mono audio • Smart caching • Parallel processing</p>
-            
-            <div className="source-grid">
-              <button onClick={() => startSession('system')} disabled={starting} className="btn-primary">
+            <div className="hero">
+              <h2>AI-Powered Interview Assistant</h2>
+              <p className="subtitle">
+                Optimized for <strong>speed</strong>, <strong>cost</strong>, and <strong>relevance</strong>
+              </p>
+              <ul className="features">
+                <li>🎯 Job-specific tailored responses</li>
+                <li>⚡ Smart caching (60%+ cost reduction)</li>
+                <li>🎤 Optimized audio (mono 16kHz, silence detection)</li>
+                <li>📊 Real-time cost tracking</li>
+              </ul>
+            </div>
+
+            <div className="source-selection">
+              <button 
+                onClick={() => startSession('system')} 
+                disabled={starting || !selectedJob}
+                className="btn-source primary"
+              >
                 <span className="icon">🖥</span>
-                <span>System Audio</span>
-                <small>Zoom, Meet, Teams</small>
+                <span className="label">System Audio</span>
+                <span className="hint">Zoom, Meet, Teams</span>
               </button>
               
-              <button onClick={() => startSession('microphone')} disabled={starting} className="btn-secondary">
+              <button 
+                onClick={() => startSession('microphone')} 
+                disabled={starting || !selectedJob}
+                className="btn-source secondary"
+              >
                 <span className="icon">🎤</span>
-                <span>Microphone</span>
-                <small>Ambient audio</small>
+                <span className="label">Microphone</span>
+                <span className="hint">Ambient audio</span>
               </button>
             </div>
 
-            <div className="shortcuts">
+            {!selectedJob && (
+              <div className="warning">
+                ⚠️ Please select or create a Job Profile first
+              </div>
+            )}
+
+            <div className="shortcuts-hint">
               <kbd>Ctrl</kbd><kbd>Space</kbd> Pause/Resume
-              <kbd>Ctrl</kbd><kbd>H</kbd> Stealth
-              <kbd>Esc</kbd> Stop
+              <kbd>Ctrl</kbd><kbd>H</kbd> Stealth Mode
+              <kbd>Esc</kbd> Stop Session
             </div>
 
-            <MetricsBar 
-              metrics={audioMetrics} 
-              cost={sessionCost} 
+            <MetricsPanel
+              metrics={audioMetrics}
+              cost={sessionCost}
               cacheStats={cacheStats}
               latency={lastLatency}
+              tailored={null}
             />
           </div>
         ) : (
           <div className="session-active">
-            <div className="qa-container">
-              {qaList.length === 0 && !currentQ && !isTranscribing && (
-                <div className="waiting">Waiting for questions...</div>
+            <div className="qa-list">
+              {qaList.length === 0 && !currentTranscription && !isTranscribing && (
+                <div className="waiting-state">
+                  <p>Listening for questions...</p>
+                  <span className="hint">
+                    {audioSource === 'system' ? 'Capturing system audio' : 'Capturing microphone'}
+                  </span>
+                </div>
               )}
 
               {qaList.map(qa => (
                 <QACard
                   key={qa.id}
                   qa={qa}
-                  isExpanded={expanded === qa.id}
-                  onToggle={() => setExpanded(expanded === qa.id ? null : qa.id)}
-                  isStarred={starred.has(qa.id)}
-                  onStar={() => setStarred(s => {
-                    const next = new Set(s);
-                    next.has(qa.id) ? next.delete(qa.id) : next.add(qa.id);
-                    return next;
-                  })}
+                  isExpanded={expandedQA === qa.id}
+                  onToggle={() => setExpandedQA(expandedQA === qa.id ? null : qa.id)}
+                  isStarred={starredIds.has(qa.id)}
+                  onStar={() => {
+                    setStarredIds(prev => {
+                      const next = new Set(prev);
+                      next.has(qa.id) ? next.delete(qa.id) : next.add(qa.id);
+                      return next;
+                    });
+                  }}
                 />
               ))}
 
-              {(isTranscribing || currentQ || isGenerating) && (
-                <div className="processing">
-                  {isTranscribing && <span>🎤 Transcribing...</span>}
-                  {currentQ && <span className="preview">Q: {currentQ}</span>}
-                  {isGenerating && <span>🤖 Generating... {getQueueStats().queueLength > 0 && `(+${getQueueStats().queueLength})`}</span>}
+              {(isTranscribing || currentTranscription || isGenerating) && (
+                <div className="processing-state">
+                  {isTranscribing && (
+                    <div className="processing-item">
+                      <span className="spinner">🎤</span>
+                      <span>Transcribing...</span>
+                    </div>
+                  )}
+                  {currentTranscription && (
+                    <div className="processing-item preview">
+                      <span className="label">Detected:</span>
+                      <span className="text">{currentTranscription}</span>
+                    </div>
+                  )}
+                  {isGenerating && (
+                    <div className="processing-item">
+                      <span className="spinner">🤖</span>
+                      <span>
+                        Generating... 
+                        {getQueueStats().queueLength > 0 && ` (+${getQueueStats().queueLength})`}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="control-bar">
-              <div className={`status ${audioStatus}`}>
-                {audioStatus === 'recording' && <span className="pulse"></span>}
-                {audioStatus}
+              <div className={`status-badge ${audioStatus}`}>
+                <span className={`pulse ${audioStatus === 'recording' ? 'active' : ''}`} />
+                <span>{audioStatus}</span>
               </div>
-              
-              <div className="actions">
+
+              <div className="control-actions">
                 {audioStatus === 'recording' ? (
-                  <button onClick={pause}>⏸ Pause</button>
+                  <button onClick={pause} className="btn-control">⏸ Pause</button>
                 ) : (
-                  <button onClick={resume}>▶ Resume</button>
+                  <button onClick={resume} className="btn-control">▶ Resume</button>
                 )}
-                <button onClick={exportSession} disabled={qaList.length === 0}>💾 Export</button>
-                <button onClick={() => setStealth(true)}>👁 Stealth</button>
-                <button onClick={stopSession} className="danger">⏹ Stop</button>
+                <button 
+                  onClick={exportSession} 
+                  disabled={qaList.length === 0}
+                  className="btn-control"
+                >
+                  💾 Export
+                </button>
+                <button 
+                  onClick={() => setStealthMode(true)} 
+                  className="btn-control"
+                >
+                  👁 Stealth
+                </button>
+                <button onClick={stopSession} className="btn-control danger">
+                  ⏹ Stop
+                </button>
               </div>
             </div>
 
-            <MetricsBar 
-              metrics={audioMetrics} 
-              cost={sessionCost} 
+            <MetricsPanel
+              metrics={audioMetrics}
+              cost={sessionCost}
               cacheStats={cacheStats}
               latency={lastLatency}
+              tailored={lastTailored}
             />
           </div>
         )}
       </main>
+
+      {showJobManager && (
+        <div className="modal-overlay" onClick={() => setShowJobManager(false)}>
+          <div className="modal large" onClick={e => e.stopPropagation()}>
+            <JobProfileManager
+              selectedId={selectedJob?.id}
+              onSelect={(job) => {
+                setSelectedJob(job);
+                setShowJobManager(false);
+              }}
+              onClose={() => setShowJobManager(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {(error || audioError) && (
         <div className="toast error" onClick={() => setError(null)}>
