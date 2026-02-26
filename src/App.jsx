@@ -1,4 +1,4 @@
-// src/App.jsx - Versão melhorada completa
+// src/App.jsx
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useAudioCapture } from './useAudioCapture';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
@@ -73,7 +73,7 @@ export default function App() {
     
     setIsTranscribing(true);
     try {
-      const result = await api.transcribe(audioBase64, mimeType, 'pt');
+      const result = await api.transcribe(audioBase64, mimeType, 'en');
       
       if (!result.text || result.text.trim().length < 3) {
         setIsTranscribing(false);
@@ -123,7 +123,7 @@ export default function App() {
       
       // Notificação sutil se estiver em modo discreto
       if (stealthMode && 'Notification' in window && Notification.permission === 'granted') {
-        new Notification('Nova resposta pronta!', { 
+        new Notification('Answer ready!', { 
           body: question.slice(0, 50) + '...',
           silent: true 
         });
@@ -230,38 +230,33 @@ export default function App() {
 
   // Status para UI
   const statusConfig = useMemo(() => {
-    if (!sessionActive) return { label: 'Pronto', color: 'bg-gray-500', pulse: false };
-    if (isGenerating) return { label: 'Gerando...', color: 'bg-amber-500', pulse: true };
-    if (isTranscribing) return { label: 'Transcrevendo...', color: 'bg-blue-500', pulse: true };
-    if (captureStatus === 'recording') return { label: 'Gravando', color: 'bg-emerald-500', pulse: true };
-    if (captureStatus === 'paused') return { label: 'Pausado', color: 'bg-amber-500', pulse: false };
-    return { label: 'Pronto', color: 'bg-gray-500', pulse: false };
+    if (!sessionActive) return { label: 'Ready', color: 'bg-gray-500', pulse: false };
+    if (isGenerating) return { label: 'Generating...', color: 'bg-amber-500', pulse: true };
+    if (isTranscribing) return { label: 'Transcribing...', color: 'bg-blue-500', pulse: true };
+    if (captureStatus === 'recording') return { label: 'Recording', color: 'bg-emerald-500', pulse: true };
+    if (captureStatus === 'paused') return { label: 'Paused', color: 'bg-amber-500', pulse: false };
+    return { label: 'Ready', color: 'bg-gray-500', pulse: false };
   }, [sessionActive, isGenerating, isTranscribing, captureStatus]);
 
-  // Exportar sessão
-  const exportSession = useCallback(() => {
-    const markdown = `# Entrevista - ${new Date().toLocaleString()}
-
-**Duração:** ${formatTime(elapsedTime)}
-**Perguntas:** ${qaPairs.length}
-
-${qaPairs.map((qa, i) => `
-## ${i + 1}. ${qa.question}
-
-${qa.answer}
-
-${qa.cached ? '*[Resposta do cache]*' : ''}
----
-`).join('')}`;
-
-    const blob = new Blob([markdown], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `entrevista-${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [qaPairs, elapsedTime]);
+  // Exportar sessão via API
+  const exportSession = useCallback(async () => {
+    if (!sessionId) return;
+    
+    try {
+      const response = await fetch(`/api/session/${sessionId}/export`);
+      if (!response.ok) throw new Error('Export failed');
+      
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `interview-${sessionId}-${new Date().toISOString().split('T')[0]}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setToastMsg('Export failed: ' + err.message);
+    }
+  }, [sessionId]);
 
   // Render modo stealth
   if (stealthMode && sessionActive) {
@@ -288,7 +283,7 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
           <div className="session-info">
             <span className="timer">{formatTime(elapsedTime)}</span>
             <span className="badge">{qaPairs.length} Qs</span>
-            <button onClick={() => setStealthMode(true)} className="stealth-btn" title="Modo discreto (Ctrl+H)">
+            <button onClick={() => setStealthMode(true)} className="stealth-btn" title="Stealth mode (Ctrl+H)">
               👁
             </button>
           </div>
@@ -299,8 +294,8 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
       <main className="app-main" ref={scrollRef}>
         {!sessionActive ? (
           <div className="start-screen">
-            <h2>Assistente de Entrevista</h2>
-            <p>Captura áudio, transcreve e gera respostas técnicas em tempo real.</p>
+            <h2>Interview Assistant</h2>
+            <p>Captures audio, transcribes questions, and generates Data Engineering answers in real-time.</p>
             
             <div className="source-buttons">
               <button 
@@ -308,7 +303,7 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
                 disabled={starting}
                 className="btn-primary"
               >
-                🖥 Áudio do Sistema
+                🖥 System Audio
                 <small>Zoom, Meet, Teams</small>
               </button>
               
@@ -317,15 +312,15 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
                 disabled={starting}
                 className="btn-secondary"
               >
-                🎤 Microfone
-                <small>Áudio ambiente</small>
+                🎤 Microphone
+                <small>Ambient audio</small>
               </button>
             </div>
             
             <div className="shortcuts-hint">
-              <kbd>Ctrl</kbd>+<kbd>Space</kbd> Pausar/Retomar &nbsp;
-              <kbd>Ctrl</kbd>+<kbd>H</kbd> Modo discreto &nbsp;
-              <kbd>Esc</kbd> Encerrar
+              <kbd>Ctrl</kbd>+<kbd>Space</kbd> Pause/Resume &nbsp;
+              <kbd>Ctrl</kbd>+<kbd>H</kbd> Stealth Mode &nbsp;
+              <kbd>Esc</kbd> End Session
             </div>
           </div>
         ) : (
@@ -334,8 +329,8 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
             <div className="qa-list">
               {qaPairs.length === 0 && !currentTranscription && !isTranscribing && (
                 <div className="waiting">
-                  <p>Aguardando perguntas...</p>
-                  <small>{audioSource === 'system' ? 'Capturando áudio do sistema' : 'Capturando áudio do microfone'}</small>
+                  <p>Waiting for questions...</p>
+                  <small>{audioSource === 'system' ? 'Capturing system audio' : 'Capturing microphone audio'}</small>
                 </div>
               )}
 
@@ -352,13 +347,13 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
 
               {(isTranscribing || currentTranscription || isGenerating) && (
                 <div className="processing-card">
-                  {isTranscribing && <div className="pulse">🎤 Transcrevendo...</div>}
+                  {isTranscribing && <div className="pulse">🎤 Transcribing...</div>}
                   {currentTranscription && (
                     <div className="transcription-preview">
-                      <strong>Detectado:</strong> {currentTranscription}
+                      <strong>Detected:</strong> {currentTranscription}
                     </div>
                   )}
-                  {isGenerating && <div className="pulse">🤖 Gerando resposta...</div>}
+                  {isGenerating && <div className="pulse">🤖 Generating answer...</div>}
                 </div>
               )}
             </div>
@@ -371,18 +366,18 @@ ${qa.cached ? '*[Resposta do cache]*' : ''}
               
               <div className="control-buttons">
                 {captureStatus === 'recording' && (
-                  <button onClick={pause} className="btn-control">⏸ Pausar</button>
+                  <button onClick={pause} className="btn-control">⏸ Pause</button>
                 )}
                 {captureStatus === 'paused' && (
-                  <button onClick={resume} className="btn-control">▶ Retomar</button>
+                  <button onClick={resume} className="btn-control">▶ Resume</button>
                 )}
                 <button onClick={exportSession} className="btn-control" disabled={qaPairs.length === 0}>
-                  💾 Exportar
+                  💾 Export
                 </button>
                 <button onClick={() => setStealthMode(true)} className="btn-control stealth">
-                  👁 Discreto
+                  👁 Stealth
                 </button>
-                <button onClick={handleStop} className="btn-control danger">⏹ Encerrar</button>
+                <button onClick={handleStop} className="btn-control danger">⏹ End</button>
               </div>
             </div>
           </div>
