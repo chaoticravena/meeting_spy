@@ -1,4 +1,4 @@
-// src/components/QACard.jsx - Atualizado com Follow-up e Cost
+// src/components/QACard.jsx - Componente completo
 import { useState } from 'react';
 
 export function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
@@ -19,7 +19,7 @@ export function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
   const technicalAnswer = qa.answer.split('### 💰 Estimated Cloud Cost')[0].trim();
   const hasCostEstimate = qa.answer.includes('### 💰 Estimated Cloud Cost');
   
-  // Extrai follow-up se não estiver no objeto separado
+  // Extrai follow-up
   const followUp = qa.followUpQuestion || 
     (qa.answer.match(/💡 \*\*Follow-up:\*\* (.+?)(?:\n|$)/)?.[1]);
 
@@ -76,10 +76,7 @@ export function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
                 <p className="follow-up-text">{followUp}</p>
                 <button 
                   className="btn-use-followup"
-                  onClick={() => {
-                    // Simula digitar na interface (se implementado)
-                    navigator.clipboard.writeText(followUp);
-                  }}
+                  onClick={() => navigator.clipboard.writeText(followUp)}
                 >
                   Copy to Ask
                 </button>
