@@ -1,4 +1,4 @@
-// src/components/JobProfileManager.jsx
+// src/components/JobProfileManager.jsx - Componente completo
 import { useState, useEffect } from 'react';
 import { api } from '../api';
 
@@ -163,9 +163,7 @@ export function JobProfileManager({ onSelect, selectedId, onClose }) {
           
           <div className="form-row">
             <textarea 
-              placeholder="Paste full job description here...
-              
-The AI will extract key requirements and tailor answers accordingly."
+              placeholder="Paste full job description here..."
               rows={6}
               value={form.description}
               onChange={e => setForm({...form, description: e.target.value})}
