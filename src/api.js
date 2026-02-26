@@ -2,46 +2,33 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 class InterviewAPI {
-  constructor() {
-    this.baseURL = API_URL;
-  }
-
-  // Upload de áudio com progresso
-  async uploadAudio(audioBlob, sessionId, isFinal = false) {
+  async uploadAudio(audioBlob, sessionId) {
     const formData = new FormData();
-    formData.append('audio', audioBlob, `chunk-${Date.now()}.webm`);
+    formData.append('audio', audioBlob, `speech-${Date.now()}.webm`);
     formData.append('sessionId', sessionId);
-    formData.append('timestamp', Date.now().toString());
-    formData.append('isFinal', isFinal.toString());
 
-    const response = await fetch(`${this.baseURL}/api/transcribe`, {
+    const response = await fetch(`${API_URL}/api/transcribe`, {
       method: 'POST',
       body: formData,
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error('Transcription failed');
     return response.json();
   }
 
-  // Streaming de resposta (Server-Sent Events)
-  async *streamAnswer(transcription, sessionId) {
-    const response = await fetch(`${this.baseURL}/api/answer-stream`, {
+  // Streaming com contexto de conversação
+  async *streamAnswerWithContext(transcription, context, sessionId) {
+    const response = await fetch(`${API_URL}/api/answer-context`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        transcription, 
-        sessionId,
-        maxTokens: 400, // Limita para respostas rápidas
-        temperature: 0.3
+      body: JSON.stringify({
+        transcription,
+        context, // Array de {role, content} das interações anteriores
+        sessionId
       }),
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    if (!response.ok) throw new Error('Stream failed');
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -49,37 +36,23 @@ class InterviewAPI {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       const chunk = decoder.decode(value);
       const lines = chunk.split('\n');
-      
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') return;
           
           try {
-            const parsed = JSON.parse(data);
-            yield parsed;
+            yield JSON.parse(data);
           } catch (e) {
-            // Ignora linhas inválidas
+            // ignora
           }
         }
       }
     }
-  }
-
-  // Buscar histórico
-  async getHistory(sessionId) {
-    const response = await fetch(`${this.baseURL}/api/history/${sessionId}`);
-    return response.json();
-  }
-
-  // Limpar sessão
-  async clearSession(sessionId) {
-    await fetch(`${this.baseURL}/api/session/${sessionId}`, {
-      method: 'DELETE'
-    });
   }
 }
 
