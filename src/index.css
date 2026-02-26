@@ -1112,4 +1112,123 @@ kbd {
     width: 100%;
     border-radius: 12px;
   }
+  /* Adições ao CSS para as novas features */
+
+/* Badges */
+.badge.followup {
+  color: #fbbf24;
+}
+
+.badge.cost {
+  color: #10b981;
+}
+
+/* Follow-up Section */
+.follow-up-section {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.follow-up-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  color: #fbbf24;
+}
+
+.follow-up-header .icon {
+  font-size: 1.25rem;
+}
+
+.follow-up-text {
+  font-style: italic;
+  color: #e2e2ea;
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+}
+
+.btn-use-followup {
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+
+.btn-use-followup:hover {
+  background: rgba(251, 191, 36, 0.3);
+}
+
+/* Cost Section */
+.cost-section {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 8px;
+  margin-top: 1rem;
+  overflow: hidden;
+}
+
+.cost-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  cursor: pointer;
+  color: #10b981;
+  transition: background 0.2s;
+}
+
+.cost-header:hover {
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.cost-header .icon {
+  font-size: 1.25rem;
+}
+
+.cost-header .toggle {
+  margin-left: auto;
+  color: #6b7280;
+}
+
+.cost-content {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.cost-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.cost-content th,
+.cost-content td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.cost-content th {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.cost-content blockquote {
+  margin: 0.5rem 0 0 0;
+  padding: 0.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid #ef4444;
+  color: #fca5a5;
+  font-size: 0.875rem;
+  border-radius: 0 4px 4px 0;
+}
 }
