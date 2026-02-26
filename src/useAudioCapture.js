@@ -1,85 +1,111 @@
 // src/useAudioCapture.js
 import { useState, useRef, useCallback } from 'react';
 
-const useAudioCapture = ({ onAudioChunk, chunkDuration = 3000, silenceThreshold = 1500 }) => {
+const useAudioCapture = ({ onSpeechEnd, silenceThreshold = 2000, minSpeechDuration = 1000 }) => {
   const [isRecording, setIsRecording] = useState(false);
-  const [audioSource, setAudioSource] = useState('microphone');
-  const [error, setError] = useState(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
   
   const mediaRecorderRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
+  
+  // Timers
   const silenceTimerRef = useRef(null);
-  const recordingTimerRef = useRef(null);
-  const isSpeechActiveRef = useRef(false);
+  const speechStartTimeRef = useRef(null);
+  const isRecordingSpeechRef = useRef(false);
 
-  // Análise de frequência para detectar fala
-  const analyzeAudioLevel = useCallback(() => {
+  // Análise de áudio em tempo real
+  const analyzeAudio = useCallback(() => {
     if (!analyserRef.current || !isRecording) return;
     
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
     analyserRef.current.getByteFrequencyData(dataArray);
     
-    // Calcula volume médio
-    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-    const isSpeech = average > 15; // Threshold ajustável
+    // Calcula volume RMS
+    const sum = dataArray.reduce((acc, val) => acc + val * val, 0);
+    const rms = Math.sqrt(sum / dataArray.length);
+    setAudioLevel(rms);
     
-    if (isSpeech && !isSpeechActiveRef.current) {
-      // Início da fala detectado
-      isSpeechActiveRef.current = true;
+    const SPEECH_THRESHOLD = 20;
+    const isSpeechNow = rms > SPEECH_THRESHOLD;
+    
+    if (isSpeechNow && !isRecordingSpeechRef.current) {
+      // INÍCIO DA FALA
+      isRecordingSpeechRef.current = true;
+      speechStartTimeRef.current = Date.now();
+      setIsSpeaking(true);
+      
+      // Limpa timer de silêncio se existir
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
-    } else if (!isSpeech && isSpeechActiveRef.current) {
-      // Possível fim da fala
+      
+    } else if (!isSpeechNow && isRecordingSpeechRef.current) {
+      // POSSÍVEL FIM DA FALA - inicia timer de confirmação
       if (!silenceTimerRef.current) {
         silenceTimerRef.current = setTimeout(() => {
-          isSpeechActiveRef.current = false;
-          // Força processamento do chunk atual
-          if (mediaRecorderRef.current?.state === 'recording') {
-            finalizeCurrentChunk();
+          const speechDuration = Date.now() - speechStartTimeRef.current;
+          
+          // Só processa se fala foi significativa (>1s)
+          if (speechDuration > minSpeechDuration) {
+            finalizeSpeechSegment();
           }
+          
+          isRecordingSpeechRef.current = false;
+          setIsSpeaking(false);
+          silenceTimerRef.current = null;
         }, silenceThreshold);
       }
     }
     
     if (isRecording) {
-      requestAnimationFrame(analyzeAudioLevel);
+      requestAnimationFrame(analyzeAudio);
     }
-  }, [isRecording, silenceThreshold]);
+  }, [isRecording, silenceThreshold, minSpeechDuration]);
 
-  const finalizeCurrentChunk = useCallback(async () => {
+  const finalizeSpeechSegment = useCallback(async () => {
     if (chunksRef.current.length === 0) return;
     
     // Para gravação temporariamente
-    mediaRecorderRef.current.stop();
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
     
-    // Cria blob do áudio acumulado
-    const audioBlob = new Blob(chunksRef.current, { type: 'audio/webm;codecs=opus' });
+    // Aguarda o último chunk
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Cria blob completo da fala
+    const audioBlob = new Blob(chunksRef.current, { 
+      type: 'audio/webm;codecs=opus' 
+    });
+    
+    // Limpa buffer para próxima fala
+    const duration = Date.now() - speechStartTimeRef.current;
     chunksRef.current = [];
     
-    // Envia para processamento
+    // Envia fala COMPLETA para processamento
     try {
-      await onAudioChunk(audioBlob);
+      await onSpeechEnd(audioBlob, duration);
     } catch (err) {
-      console.error('Erro ao processar chunk:', err);
+      console.error('Erro ao processar fala:', err);
     }
     
-    // Reinicia gravação se ainda estiver gravando
+    // Reinicia gravação para próxima fala
     if (isRecording && mediaRecorderRef.current?.state === 'inactive') {
-      startNewChunk();
+      startMediaRecorder();
     }
-  }, [isRecording, onAudioChunk]);
+  }, [isRecording, onSpeechEnd]);
 
-  const startNewChunk = useCallback(() => {
+  const startMediaRecorder = useCallback(() => {
     if (!streamRef.current) return;
     
     mediaRecorderRef.current = new MediaRecorder(streamRef.current, {
       mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 16000 // Qualidade suficiente para whisper, arquivo menor
+      audioBitsPerSecond: 24000 // Qualidade boa, arquivo pequeno
     });
     
     mediaRecorderRef.current.ondataavailable = (event) => {
@@ -88,41 +114,25 @@ const useAudioCapture = ({ onAudioChunk, chunkDuration = 3000, silenceThreshold 
       }
     };
     
-    mediaRecorderRef.current.onstop = () => {
-      // Auto-reinicia após 100ms para não perder áudio
-      if (isRecording) {
-        setTimeout(() => startNewChunk(), 100);
-      }
-    };
-    
-    // Grava em timeslices de 500ms para não perder dados
-    mediaRecorderRef.current.start(500);
-    
-    // Timeout de segurança: força chunk a cada chunkDuration
-    recordingTimerRef.current = setTimeout(() => {
-      if (mediaRecorderRef.current?.state === 'recording') {
-        finalizeCurrentChunk();
-      }
-    }, chunkDuration);
-  }, [chunkDuration, finalizeCurrentChunk, isRecording]);
+    // Grava em timeslices pequenos para não perder dados entre pausas
+    mediaRecorderRef.current.start(200);
+  }, []);
 
   const startRecording = useCallback(async (source = 'microphone') => {
     try {
-      setError(null);
-      setAudioSource(source);
-      
       let stream;
+      
       if (source === 'microphone') {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: { 
-            sampleRate: 16000,
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: 24000,
             channelCount: 1,
             echoCancellation: true,
-            noiseSuppression: true
-          } 
+            noiseSuppression: true,
+            autoGainControl: true
+          }
         });
       } else {
-        // System audio via getDisplayMedia
         stream = await navigator.mediaDevices.getDisplayMedia({
           audio: true,
           video: false
@@ -131,83 +141,57 @@ const useAudioCapture = ({ onAudioChunk, chunkDuration = 3000, silenceThreshold 
       
       streamRef.current = stream;
       
-      // Setup AudioContext para análise em tempo real
-      audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+      // Setup AudioContext para análise
+      audioContextRef.current = new AudioContext({ sampleRate: 24000 });
       analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
+      analyserRef.current.fftSize = 512;
+      analyserRef.current.smoothingTimeConstant = 0.8; // Suaviza leituras
       
       const sourceNode = audioContextRef.current.createMediaStreamSource(stream);
       sourceNode.connect(analyserRef.current);
       
-      // Inicia análise de áudio
-      analyzeAudioLevel();
-      
-      // Inicia gravação
+      // Inicia gravação contínua
+      startMediaRecorder();
       setIsRecording(true);
-      startNewChunk();
+      
+      // Inicia loop de análise
+      analyzeAudio();
       
     } catch (err) {
-      setError(err.message);
-      console.error('Erro ao iniciar gravação:', err);
+      console.error('Erro ao iniciar:', err);
+      throw err;
     }
-  }, [analyzeAudioLevel, startNewChunk]);
+  }, [analyzeAudio, startMediaRecorder]);
 
   const stopRecording = useCallback(() => {
     setIsRecording(false);
+    setIsSpeaking(false);
     
     // Limpa timers
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    if (recordingTimerRef.current) clearTimeout(recordingTimerRef.current);
     
-    // Finaliza chunk atual
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop();
+    // Processa fala atual se houver
+    if (isRecordingSpeechRef.current && chunksRef.current.length > 0) {
+      finalizeSpeechSegment();
     }
     
     // Limpa recursos
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-    
-    // Envia último chunk se houver
-    if (chunksRef.current.length > 0) {
-      const finalBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
-      onAudioChunk(finalBlob, true); // true = isFinal
-    }
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    audioContextRef.current?.close();
     
     chunksRef.current = [];
-    streamRef.current = null;
-    mediaRecorderRef.current = null;
-  }, [onAudioChunk]);
-
-  const pauseRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.pause();
-      if (recordingTimerRef.current) clearTimeout(recordingTimerRef.current);
-    }
-  }, []);
-
-  const resumeRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'paused') {
-      mediaRecorderRef.current.resume();
-      // Reinicia timer de segurança
-      recordingTimerRef.current = setTimeout(() => {
-        finalizeCurrentChunk();
-      }, chunkDuration);
-    }
-  }, [chunkDuration, finalizeCurrentChunk]);
+    isRecordingSpeechRef.current = false;
+  }, [finalizeSpeechSegment]);
 
   return {
     isRecording,
-    audioSource,
-    error,
+    isSpeaking,
+    audioLevel,
     startRecording,
-    stopRecording,
-    pauseRecording,
-    resumeRecording
+    stopRecording
   };
 };
 
