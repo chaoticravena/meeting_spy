@@ -1,13 +1,14 @@
-// src/App.jsx - Aplicação principal integrada
+// src/App.jsx - Aplicação principal completa
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useOptimizedAudioCapture } from './useOptimizedAudioCapture';
 import { useSmartCache } from './useSmartCache';
 import { useParallelQueue } from './useParallelQueue';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { JobProfileManager } from './components/JobProfileManager';
+import { QACard } from './components/QACard';
 import { api } from './api';
 
-// Subcomponentes
+// Metrics Panel Component
 function MetricsPanel({ metrics, cost, cacheStats, latency, tailored }) {
   return (
     <div className="metrics-panel">
@@ -50,71 +51,7 @@ function MetricsPanel({ metrics, cost, cacheStats, latency, tailored }) {
   );
 }
 
-function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(qa.answer);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Copy failed:', err);
-    }
-  };
-
-  return (
-    <div className={`qa-card ${qa.cached ? 'cached' : ''} ${qa.tailored ? 'tailored' : ''} ${isStarred ? 'starred' : ''}`}>
-      <div className="qa-header" onClick={onToggle}>
-        <span className="qa-number">#{qa.id}</span>
-        <span className="qa-preview">{qa.question}</span>
-        <div className="qa-badges">
-          {qa.cached && <span className="badge cache" title="From cache">⚡</span>}
-          {qa.tailored && <span className="badge tailored" title="Tailored to job">🎯</span>}
-          <button 
-            className={`star-btn ${isStarred ? 'active' : ''}`}
-            onClick={(e) => { e.stopPropagation(); onStar(); }}
-          >
-            {isStarred ? '★' : '☆'}
-          </button>
-          <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
-        </div>
-      </div>
-      
-      {isExpanded && (
-        <div className="qa-body">
-          <div className="qa-question">
-            <strong>Question:</strong>
-            <p>{qa.question}</p>
-          </div>
-          
-          <div className="qa-answer">
-            <div className="answer-header">
-              <strong>Answer:</strong>
-              <button 
-                className={`copy-btn ${copied ? 'copied' : ''}`}
-                onClick={copy}
-              >
-                {copied ? '✓ Copied!' : 'Copy'}
-              </button>
-            </div>
-            <div className="answer-content">
-              {qa.answer.split('\n').map((line, i) => (
-                <p key={i}>{line}</p>
-              ))}
-            </div>
-            <div className="answer-meta">
-              {qa.processingTimeMs > 0 && <span>{qa.processingTimeMs}ms</span>}
-              {qa.cost && <span>${qa.cost}</span>}
-              {qa.tokens && <span>{qa.tokens.input}→{qa.tokens.output} tokens</span>}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
+// Stealth Mode Component
 function StealthMode({ status, elapsed, qaCount, cost, currentQ, onPause, onResume, onStop, onExpand }) {
   const formatTime = (s) => {
     const m = Math.floor(s / 60).toString().padStart(2, '0');
@@ -182,7 +119,7 @@ export default function App() {
   const sessionStartRef = useRef(0);
 
   // Hooks otimizados
-  const { getCached, setCached, getStats: getCacheStats, clear: clearCache } = useSmartCache();
+  const { getCached, setCached, getStats: getCacheStats } = useSmartCache();
 
   // Carrega job default na montagem
   useEffect(() => {
