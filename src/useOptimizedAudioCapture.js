@@ -1,215 +1,164 @@
-// src/useOptimizedAudioCapture.js - Áudio otimizado com silence detection
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 
-export function useOptimizedAudioCapture({ 
-  onChunk, 
-  silenceThreshold = 800,  // ms de silêncio para trigger
-  maxChunkMs = 12000,      // máximo 12s (economia vs latência)
-  minChunkMs = 3000        // mínimo 3s para evitar chunks vazios
+export function useOptimizedAudioCapture({
+  onChunk,
+  silenceThreshold = 800, // ms de silêncio para forçar o chunk
+  maxChunkMs = 12000, // 12 segundos max
+  minChunkMs = 3000, // 3 segundos min
 }) {
   const [status, setStatus] = useState("idle");
-  const [source, setSource] = useState("microphone");
   const [error, setError] = useState(null);
   const [metrics, setMetrics] = useState({ bytesSent: 0, chunksSent: 0 });
 
-  const mediaStreamRef = useRef(null);
-  const recorderRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
-  const silenceStartRef = useRef(null);
-  const chunksRef = useRef([]);
-  const intervalRef = useRef(null);
-  const dataArrayRef = useRef(null);
-  const startTimeRef = useRef(0);
+  const streamRef = useRef(null);
+  const silenceTimerRef = useRef(null);
+  const chunkTimerRef = useRef(null);
+  const audioDataRef = useRef([]);
+  const isSpeechActiveRef = useRef(false);
 
-  const cleanup = useCallback(() => {
-    clearInterval(intervalRef.current);
-    
-    if (recorderRef.current?.state !== "inactive") {
-      try { recorderRef.current?.stop(); } catch (e) {}
+  const sendChunk = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      mediaRecorderRef.current.requestData();
     }
-    
-    audioContextRef.current?.close().catch(() => {});
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    
-    recorderRef.current = null;
-    audioContextRef.current = null;
-    mediaStreamRef.current = null;
-    analyserRef.current = null;
-    silenceStartRef.current = null;
-    chunksRef.current = [];
+    clearTimeout(chunkTimerRef.current);
+    chunkTimerRef.current = null;
   }, []);
 
-  useEffect(() => cleanup, [cleanup]);
+  const processAudio = useCallback(() => {
+    if (!analyserRef.current || !audioContextRef.current || status !== 'recording') return;
 
-  const processChunks = useCallback((force = false) => {
-    const elapsed = Date.now() - startTimeRef.current;
+    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    analyserRef.current.getByteFrequencyData(dataArray);
     
-    // Só processa se tem dados suficientes ou foi forçado
-    if (chunksRef.current.length === 0) return;
-    if (!force && elapsed < minChunkMs) return;
-    
-    const blob = new Blob(chunksRef.current, { type: "audio/webm;codecs=opus" });
-    chunksRef.current = [];
-    startTimeRef.current = Date.now();
-    
-    if (blob.size < 1024) return; // Ignora muito pequeno
-    
-    // Estatísticas
-    setMetrics(prev => ({
-      bytesSent: prev.bytesSent + blob.size,
-      chunksSent: prev.chunksSent + 1
-    }));
+    // Calcula volume médio (simples VAD)
+    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+    const isSpeech = average > 15; // Threshold ajustável
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64 = reader.result?.split(",")[1];
-      if (base64) {
-        // Estimativa: ~1.5kb/s com opus 32kbps mono
-        const estimatedDuration = blob.size / 1500;
-        onChunk(base64, "audio/webm", blob.size, estimatedDuration);
+    if (isSpeech) {
+      // Atividade de voz detectada
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
       }
-    };
-    reader.readAsDataURL(blob);
-  }, [onChunk, minChunkMs]);
-
-  const setupSilenceDetection = useCallback((stream) => {
-    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    analyserRef.current = audioContextRef.current.createAnalyser();
-    analyserRef.current.fftSize = 512;
-    analyserRef.current.smoothingTimeConstant = 0.8;
-    
-    source.connect(analyserRef.current);
-    dataArrayRef.current = new Uint8Array(analyserRef.current.frequencyBinCount);
-    
-    const detect = () => {
-      if (!analyserRef.current || status !== "recording") return;
-      
-      analyserRef.current.getByteFrequencyData(dataArrayRef.current);
-      const sum = dataArrayRef.current.reduce((a, b) => a + b, 0);
-      const average = sum / dataArrayRef.current.length;
-      
-      const now = Date.now();
-      
-      if (average < 5) { // Silêncio detectado (threshold baixo)
-        if (!silenceStartRef.current) {
-          silenceStartRef.current = now;
-        } else if (now - silenceStartRef.current > silenceThreshold) {
-          // Silêncio prolongado, envia imediatamente
-          processChunks(true);
-          silenceStartRef.current = null;
-        }
-      } else {
-        silenceStartRef.current = null;
+      isSpeechActiveRef.current = true;
+    } else if (isSpeechActiveRef.current) {
+      // Silêncio detectado após fala
+      if (!silenceTimerRef.current) {
+        silenceTimerRef.current = setTimeout(() => {
+          isSpeechActiveRef.current = false;
+          sendChunk(); // Força o envio do chunk após o silêncio
+        }, silenceThreshold);
       }
-      
-      requestAnimationFrame(detect);
-    };
-    
-    detect();
-  }, [status, silenceThreshold, processChunks]);
+    }
 
-  const startRecording = useCallback(async (audioSource) => {
-    cleanup();
-    setError(null);
-    setSource(audioSource);
-    setStatus("starting");
-    startTimeRef.current = Date.now();
+    requestAnimationFrame(processAudio);
+  }, [silenceThreshold, status, sendChunk]);
 
+  const startRecording = useCallback(async (sourceType) => {
     try {
-      const constraints = audioSource === "system" 
-        ? { video: true, audio: { channelCount: 1, sampleRate: 16000, sampleSize: 16 } }
-        : { 
-            audio: { 
-              echoCancellation: true, 
-              noiseSuppression: true, 
-              autoGainControl: true,
-              channelCount: 1,
-              sampleRate: 16000,
-              sampleSize: 16
-            } 
-          };
+      setStatus("starting");
+      
+      // 1. Obter Stream
+      const stream = await (sourceType === "system"
+        ? navigator.mediaDevices.getDisplayMedia({ video: false, audio: true })
+        : navigator.mediaDevices.getUserMedia({ audio: {
+            sampleRate: 16000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true
+          } }));
 
-      let stream;
-      if (audioSource === "system") {
-        stream = await navigator.mediaDevices.getDisplayMedia(constraints);
-        stream.getVideoTracks().forEach(t => t.stop());
-        if (stream.getAudioTracks().length === 0) {
-          throw new Error("No audio track. Select 'Share audio' when choosing tab.");
-        }
-      } else {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const audioTrack = stream.getAudioTracks()[0];
+      if (!audioTrack) {
+        throw new Error("No audio track found in the selected source.");
       }
 
-      mediaStreamRef.current = stream;
-      setupSilenceDetection(stream);
+      streamRef.current = new MediaStream([audioTrack]);
       
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus" 
-        : "audio/webm";
+      // 2. Setup AudioContext para VAD
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const sourceNode = audioContextRef.current.createMediaStreamSource(streamRef.current);
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      sourceNode.connect(analyserRef.current);
 
-      const recorder = new MediaRecorder(stream, { 
-        mimeType, 
-        audioBitsPerSecond: 24000 // 24kbps suficiente para voz clara
-      });
-      
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+      // 3. Setup MediaRecorder
+      mediaRecorderRef.current = new MediaRecorder(streamRef.current, { mimeType: "audio/webm;codecs=opus" });
+      audioDataRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioDataRef.current.push(event.data);
+          const blob = new Blob(audioDataRef.current, { type: "audio/webm;codecs=opus" });
+          
+          // Envia o chunk
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = reader.result.split(",")[1];
+            const estimatedDuration = blob.size / (16000 * 1 * 2); // Aproximação
+            onChunk(base64, "audio/webm;codecs=opus", estimatedDuration);
+            setMetrics((prev) => ({ bytesSent: prev.bytesSent + blob.size, chunksSent: prev.chunksSent + 1 }));
+          };
+          reader.readAsDataURL(blob);
+          
+          audioDataRef.current = []; // Reset para o próximo chunk
+          
+          // Reinicia o timer de segurança
+          clearTimeout(chunkTimerRef.current);
+          chunkTimerRef.current = setTimeout(sendChunk, maxChunkMs);
+        }
       };
 
-      recorderRef.current = recorder;
-      recorder.start(500); // Coleta a cada 500ms para responsividade
+      mediaRecorderRef.current.onstart = () => {
+        setStatus("recording");
+        processAudio(); // Inicia o loop de VAD
+        chunkTimerRef.current = setTimeout(sendChunk, maxChunkMs); // Timer de segurança
+      };
       
-      setStatus("recording");
+      mediaRecorderRef.current.start(500); // Grava em timeslices de 500ms
       
-      // Intervalo de segurança
-      intervalRef.current = setInterval(() => {
-        processChunks(true);
-      }, maxChunkMs);
-
     } catch (err) {
-      const message = err?.name === "NotAllowedError"
-        ? "Permission denied. Check browser settings."
-        : err?.message || "Error starting capture.";
-      setError(message);
-      setStatus("idle");
-      cleanup();
+      setError(err.message);
+      setStatus("error");
     }
-  }, [cleanup, setupSilenceDetection, processChunks, maxChunkMs]);
+  }, [processAudio, maxChunkMs, onChunk, sendChunk]);
 
   const pause = useCallback(() => {
-    if (recorderRef.current?.state === "recording") {
-      processChunks(true);
-      recorderRef.current.pause();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      mediaRecorderRef.current.pause();
       setStatus("paused");
-      clearInterval(intervalRef.current);
+      clearTimeout(silenceTimerRef.current);
+      clearTimeout(chunkTimerRef.current);
     }
-  }, [processChunks]);
+  }, []);
 
   const resume = useCallback(() => {
-    if (recorderRef.current?.state === "paused") {
-      recorderRef.current.resume();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "paused") {
+      mediaRecorderRef.current.resume();
       setStatus("recording");
-      startTimeRef.current = Date.now();
-      intervalRef.current = setInterval(() => processChunks(true), maxChunkMs);
+      processAudio(); // Reinicia o loop de VAD
+      chunkTimerRef.current = setTimeout(sendChunk, maxChunkMs);
     }
-  }, [processChunks, maxChunkMs]);
+  }, [maxChunkMs, sendChunk, processAudio]);
 
   const stop = useCallback(() => {
-    processChunks(true);
-    cleanup();
-    setStatus("stopped");
-  }, [cleanup, processChunks]);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    clearTimeout(silenceTimerRef.current);
+    clearTimeout(chunkTimerRef.current);
+    setStatus("idle");
+    isSpeechActiveRef.current = false;
+  }, []);
 
-  return { 
-    status, 
-    source, 
-    error, 
-    metrics,
-    startRecording, 
-    pause, 
-    resume, 
-    stop 
-  };
+  return { status, error, metrics, startRecording, pause, resume, stop };
 }
