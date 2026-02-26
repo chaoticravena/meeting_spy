@@ -12,11 +12,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "..", "data");
 mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(join(DATA_DIR, "interview-agent.db"));
+const DB_PATH = join(DATA_DIR, "interview-agent.db");
+const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
-// ─── Database Schema ───
+// ─── Database Setup ───
 db.exec(`
   CREATE TABLE IF NOT EXISTS job_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,8 +61,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_job ON interview_sessions(jobProfileId);
 `);
 
-// ─── OpenAI & Express ───
+// ─── OpenAI ───
+if (!process.env.OPENAI_API_KEY) {
+  console.error("❌ OPENAI_API_KEY not configured. Copy .env.example to .env and add your key.");
+  process.exit(1);
+}
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ─── Express ───
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
@@ -412,7 +420,7 @@ app.post("/api/ai/answer", async (req, res) => {
     // Ajusta parâmetros baseado na pergunta
     const isComplex = question.length > 100 || question.includes('design');
     const maxTokens = isComplex ? 2048 : (isTailored ? 1024 : 768);
-    const temperature = isTailored ? 0.2 : 0.4; // Mais focado se relevante ao job
+    const temperature = isTailored ? 0.2 : 0.4;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
