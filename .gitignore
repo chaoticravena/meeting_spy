@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes Virtuais (VITAL para Python)
+venv/
+.venv/
+env/
+
+# Variáveis de Ambiente (Segurança!)
+.env
+*.env
+
+# Logs e Dados Temporários
+*.log
+data/
+db.sqlite3
+
+# IDEs e Editores
+.vscode/
+.idea/
+.DS_Store
+
+# Node.js (se estiver usando)
+node_modules/
+dist/
