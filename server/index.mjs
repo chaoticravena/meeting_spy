@@ -1,4 +1,4 @@
-// server/index.mjs - Backend otimizado completo
+// server/index.mjs - Backend completo com Job Profiles
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -6,35 +6,41 @@ import Database from "better-sqlite3";
 import OpenAI from "openai";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { mkdirSync, existsSync } from "fs";
+import { mkdirSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "..", "data");
-const DB_PATH = join(DATA_DIR, "interview-agent.db");
-
-// ─── Environment ───
-if (!process.env.OPENAI_API_KEY) {
-  console.error("❌ OPENAI_API_KEY not configured");
-  process.exit(1);
-}
-
-// ─── Database ───
 mkdirSync(DATA_DIR, { recursive: true });
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL"); // Performance over durability para cache
 
-// Create tables if not exist
+const db = new Database(join(DATA_DIR, "interview-agent.db"));
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
+
+// ─── Database Schema ───
 db.exec(`
+  CREATE TABLE IF NOT EXISTS job_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    company TEXT,
+    description TEXT NOT NULL,
+    key_skills TEXT,
+    seniority TEXT CHECK(seniority IN ('junior', 'mid', 'senior', 'staff')),
+    focus_areas TEXT,
+    createdAt TEXT DEFAULT (datetime('now')),
+    isDefault BOOLEAN DEFAULT 0
+  );
+  
   CREATE TABLE IF NOT EXISTS interview_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused', 'completed')),
+    jobProfileId INTEGER,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'paused', 'completed')),
     startedAt INTEGER NOT NULL,
     endedAt INTEGER,
-    totalQuestions INTEGER NOT NULL DEFAULT 0,
+    totalQuestions INTEGER DEFAULT 0,
     totalCost REAL DEFAULT 0,
-    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    FOREIGN KEY (jobProfileId) REFERENCES job_profiles(id)
   );
+  
   CREATE TABLE IF NOT EXISTS question_answers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sessionId INTEGER NOT NULL,
@@ -45,19 +51,24 @@ db.exec(`
     tokensOutput INTEGER,
     cost REAL,
     cached BOOLEAN DEFAULT 0,
-    createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+    tailored BOOLEAN DEFAULT 0,
+    createdAt TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (sessionId) REFERENCES interview_sessions(id)
   );
+  
   CREATE INDEX IF NOT EXISTS idx_qa_session ON question_answers(sessionId);
-  CREATE INDEX IF NOT EXISTS idx_qa_created ON question_answers(createdAt);
+  CREATE INDEX IF NOT EXISTS idx_sessions_job ON interview_sessions(jobProfileId);
 `);
 
-// ─── OpenAI ───
+// ─── OpenAI & Express ───
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "20mb" }));
 
-// ─── Server Cache (LRU) ───
+// ─── LRU Cache ───
 class LRUCache {
-  constructor(maxSize = 100) {
+  constructor(maxSize = 200) {
     this.maxSize = maxSize;
     this.cache = new Map();
     this.hits = 0;
@@ -97,51 +108,68 @@ class LRUCache {
 }
 
 const responseCache = new LRUCache(200);
-const embeddingCache = new LRUCache(500);
 
-// ─── Express ───
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: "20mb" })); // Reduzido de 50mb
-
-// ─── System Prompt ───
-const SYSTEM_PROMPT = `You are a senior Data Engineering expert. Answer in ENGLISH.
+// ─── Prompt Generator ───
+const BASE_PROMPT = `You are a senior technical interviewer assistant. Be CONCISE, DIRECT, and PRACTICAL.
 
 Rules:
-1. Be DIRECT and CONCISE - this is a live interview
-2. Start with the core answer, details only if needed
-3. Code examples: short and practical
-4. Mention trade-offs when relevant
-5. No greetings/fluff - get to the point
-6. Use markdown for readability
-7. For system design: requirements → architecture → components → trade-offs
+1. No greetings/fluff - straight to the answer
+2. Start with core concept, expand only if needed
+3. Always include practical examples (code or architecture)
+4. Mention trade-offs and production considerations
+5. Use markdown for readability
+6. Answer in ENGLISH`;
 
-Expertise: SQL, Spark, Kafka, Airflow, Python, Cloud (AWS/GCP/Azure), Data Lakes, ETL/ELT, dbt, Streaming.`;
+function generateJobPrompt(job) {
+  if (!job) return `${BASE_PROMPT}\n\nFocus: General Data Engineering`;
+  
+  const skills = JSON.parse(job.key_skills || '[]');
+  const areas = JSON.parse(job.focus_areas || '[]');
+  
+  return `${BASE_PROMPT}
+
+JOB CONTEXT:
+- Role: ${job.name} at ${job.company || 'Unknown Company'}
+- Seniority Level: ${job.seniority || 'senior'}
+- Required Skills: ${skills.join(', ')}
+
+FOCUS AREAS (prioritize in answers):
+${areas.map(a => `- ${a}`).join('\n')}
+
+JOB DESCRIPTION:
+${job.description.slice(0, 1000)}...
+
+INSTRUCTIONS:
+- Emphasize: ${skills.slice(0, 5).join(', ')}
+- Use examples from their tech stack
+- Match depth to ${job.seniority} level expectations
+- Highlight relevant production experience`;
+}
 
 // ─── Helpers ───
+function normalizeQuestion(q) {
+  return q.toLowerCase().trim().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').slice(0, 200);
+}
+
 function estimateCost(tokensIn, tokensOut, model = 'gpt-4o-mini') {
-  // Preços por 1M tokens (atualizar conforme OpenAI)
   const prices = {
     'gpt-4o-mini': { in: 0.15, out: 0.60 },
-    'gpt-4o': { in: 2.50, out: 10.00 },
-    'gpt-3.5-turbo': { in: 0.50, out: 1.50 }
+    'gpt-4o': { in: 2.50, out: 10.00 }
   };
   const p = prices[model] || prices['gpt-4o-mini'];
   return (tokensIn * p.in + tokensOut * p.out) / 1000000;
 }
 
-function normalizeQuestion(q) {
-  return q.toLowerCase().trim().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').slice(0, 200);
+function checkRelevance(question, skills) {
+  if (!skills || skills.length === 0) return false;
+  const q = question.toLowerCase();
+  return skills.some(skill => q.includes(skill.toLowerCase()));
 }
 
 // ─── Routes ───
 
 app.get("/api/health", (req, res) => {
-  res.json({ 
-    ok: true, 
-    timestamp: Date.now(),
-    cache: responseCache.getStats()
-  });
+  res.json({ ok: true, cache: responseCache.getStats() });
 });
 
 app.get("/api/stats", (req, res) => {
@@ -149,12 +177,14 @@ app.get("/api/stats", (req, res) => {
     const sessions = db.prepare("SELECT COUNT(*) as count FROM interview_sessions WHERE status = 'completed'").get();
     const questions = db.prepare("SELECT COUNT(*) as count FROM question_answers").get();
     const costs = db.prepare("SELECT SUM(cost) as total, SUM(CASE WHEN cached THEN 1 ELSE 0 END) as cached FROM question_answers").get();
+    const jobs = db.prepare("SELECT COUNT(*) as count FROM job_profiles").get();
     
     res.json({
       sessions: sessions.count,
       questions: questions.count,
       totalCost: costs.total || 0,
       cachedQuestions: costs.cached || 0,
+      jobProfiles: jobs.count,
       cacheStats: responseCache.getStats()
     });
   } catch (err) {
@@ -162,15 +192,107 @@ app.get("/api/stats", (req, res) => {
   }
 });
 
+// ─── Job Profiles ───
+
+app.post("/api/jobs", (req, res) => {
+  try {
+    const { name, company, description, key_skills, seniority, focus_areas, isDefault } = req.body;
+    
+    if (isDefault) {
+      db.prepare("UPDATE job_profiles SET isDefault = 0").run();
+    }
+    
+    const result = db.prepare(`
+      INSERT INTO job_profiles (name, company, description, key_skills, seniority, focus_areas, isDefault)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      name, 
+      company, 
+      description, 
+      JSON.stringify(key_skills || []), 
+      seniority || 'senior', 
+      JSON.stringify(focus_areas || []), 
+      isDefault ? 1 : 0
+    );
+    
+    res.json({ id: result.lastInsertRowid, name, isDefault: !!isDefault });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/jobs", (req, res) => {
+  try {
+    const jobs = db.prepare("SELECT * FROM job_profiles ORDER BY isDefault DESC, createdAt DESC").all();
+    res.json(jobs.map(j => ({
+      ...j,
+      key_skills: JSON.parse(j.key_skills || '[]'),
+      focus_areas: JSON.parse(j.focus_areas || '[]')
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/jobs/default", (req, res) => {
+  try {
+    let job = db.prepare("SELECT * FROM job_profiles WHERE isDefault = 1 LIMIT 1").get();
+    if (!job) {
+      job = db.prepare("SELECT * FROM job_profiles ORDER BY createdAt DESC LIMIT 1").get();
+    }
+    
+    if (!job) return res.json(null);
+    
+    res.json({
+      ...job,
+      key_skills: JSON.parse(job.key_skills || '[]'),
+      focus_areas: JSON.parse(job.focus_areas || '[]')
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/jobs/:id", (req, res) => {
+  try {
+    db.prepare("DELETE FROM job_profiles WHERE id = ?").run(req.params.id);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Sessions ───
+
 app.post("/api/session/create", (req, res) => {
   try {
-    const result = db.prepare(
-      "INSERT INTO interview_sessions (startedAt, status, totalQuestions) VALUES (?, 'active', 0)"
-    ).run(Date.now());
+    const { jobProfileId } = req.body;
     
-    const session = db.prepare("SELECT * FROM interview_sessions WHERE id = ?").get(result.lastInsertRowid);
-    console.log(`📋 Session #${session.id} started`);
-    res.json(session);
+    let finalJobId = jobProfileId;
+    if (!finalJobId) {
+      const defaultJob = db.prepare("SELECT id FROM job_profiles WHERE isDefault = 1 LIMIT 1").get();
+      if (defaultJob) finalJobId = defaultJob.id;
+    }
+    
+    const result = db.prepare(`
+      INSERT INTO interview_sessions (jobProfileId, startedAt, status, totalQuestions)
+      VALUES (?, ?, 'active', 0)
+    `).run(finalJobId || null, Date.now());
+    
+    const session = db.prepare(`
+      SELECT s.*, j.name as jobName, j.company, j.description, j.key_skills, j.seniority, j.focus_areas
+      FROM interview_sessions s
+      LEFT JOIN job_profiles j ON s.jobProfileId = j.id
+      WHERE s.id = ?
+    `).get(result.lastInsertRowid);
+    
+    console.log(`📋 Session #${session.id}${session.jobName ? ` [${session.jobName}]` : ''}`);
+    
+    res.json({
+      ...session,
+      key_skills: session.key_skills ? JSON.parse(session.key_skills) : [],
+      focus_areas: session.focus_areas ? JSON.parse(session.focus_areas) : []
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -181,20 +303,24 @@ app.post("/api/session/end", (req, res) => {
     const { sessionId, totalQuestions } = req.body;
     const costs = db.prepare("SELECT SUM(cost) as total FROM question_answers WHERE sessionId = ?").get(sessionId);
     
-    db.prepare(
-      "UPDATE interview_sessions SET status = 'completed', endedAt = ?, totalQuestions = ?, totalCost = ? WHERE id = ?"
-    ).run(Date.now(), totalQuestions, costs.total || 0, sessionId);
+    db.prepare(`
+      UPDATE interview_sessions 
+      SET status = 'completed', endedAt = ?, totalQuestions = ?, totalCost = ?
+      WHERE id = ?
+    `).run(Date.now(), totalQuestions, costs.total || 0, sessionId);
     
     const session = db.prepare("SELECT * FROM interview_sessions WHERE id = ?").get(sessionId);
     if (session) {
       const duration = Math.round((session.endedAt - session.startedAt) / 60000);
-      console.log(`✅ Session #${session.id} ended | ${duration}min | ${totalQuestions}Q | $${session.totalCost?.toFixed(4) || 0}`);
+      console.log(`✅ Session #${session.id} | ${duration}min | ${totalQuestions}Q | $${session.totalCost?.toFixed(4)}`);
     }
     res.json(session);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Voice & AI ───
 
 app.post("/api/voice/transcribe", async (req, res) => {
   try {
@@ -208,7 +334,6 @@ app.post("/api/voice/transcribe", async (req, res) => {
       return res.status(400).json({ error: `File too large: ${sizeMB.toFixed(1)}MB` });
     }
 
-    // Estimativa de custo Whisper: $0.006/minuto
     const estimatedCost = (estimatedDuration / 60) * 0.006;
 
     const audioFile = new File([buffer], "audio.webm", { type: mimeType });
@@ -217,7 +342,7 @@ app.post("/api/voice/transcribe", async (req, res) => {
       model: "whisper-1",
       language,
       response_format: "verbose_json",
-      prompt: "Technical Data Engineering interview. Terms: SQL, Spark, Kafka, Airflow, ETL, Python, PySpark, dbt, Snowflake, BigQuery.",
+      prompt: "Technical interview. Common terms: SQL, Spark, Kafka, Airflow, Python, PySpark, dbt, Snowflake, BigQuery, data pipeline, ETL, streaming.",
     });
 
     res.json({
@@ -234,144 +359,121 @@ app.post("/api/voice/transcribe", async (req, res) => {
 
 app.post("/api/ai/answer", async (req, res) => {
   try {
-    const { question, sessionId, previousQAs = [], stream = false } = req.body;
+    const { question, sessionId, previousQAs = [] } = req.body;
     if (!question) return res.status(400).json({ error: "question required" });
 
     const startTime = Date.now();
     const normalizedQ = normalizeQuestion(question);
-    
-    // 1. Verifica cache
-    const cached = responseCache.get(normalizedQ);
+
+    // Busca sessão com job context
+    const session = db.prepare(`
+      SELECT s.*, j.description, j.key_skills, j.seniority, j.focus_areas
+      FROM interview_sessions s
+      LEFT JOIN job_profiles j ON s.jobProfileId = j.id
+      WHERE s.id = ?
+    `).get(sessionId);
+
+    // Verifica cache
+    const cacheKey = session?.jobProfileId 
+      ? `${session.jobProfileId}:${normalizedQ}`
+      : normalizedQ;
+      
+    const cached = responseCache.get(cacheKey);
     if (cached) {
       console.log('⚡ Cache hit');
       
-      if (sessionId) {
-        db.prepare(
-          "INSERT INTO question_answers (sessionId, question, answer, processingTimeMs, tokensInput, tokensOutput, cost, cached) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        ).run(sessionId, question, cached.answer, 0, 0, 0, 0, 1).catch(() => {});
-      }
+      db.prepare(`
+        INSERT INTO question_answers (sessionId, question, answer, processingTimeMs, tokensInput, tokensOutput, cost, cached, tailored)
+        VALUES (?, ?, ?, 0, 0, 0, 0, 1, 0)
+      `).run(sessionId, question, cached.answer).catch(() => {});
       
-      if (stream) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.write(`data: ${JSON.stringify({ chunk: cached.answer })}\n\n`);
-        res.write(`data: ${JSON.stringify({ done: true, cached: true })}\n\n`);
-        res.end();
-      } else {
-        res.json({ answer: cached.answer, processingTimeMs: 0, cached: true });
-      }
-      return;
+      return res.json({ 
+        answer: cached.answer, 
+        processingTimeMs: 0, 
+        cached: true,
+        tailored: false
+      });
     }
 
-    // 2. Prepara contexto otimizado (últimas 3, truncadas)
+    // Gera prompt específico do job
+    const systemPrompt = generateJobPrompt(session);
+    const jobSkills = session?.key_skills ? JSON.parse(session.key_skills) : [];
+    const isTailored = checkRelevance(question, jobSkills);
+
+    // Contexto otimizado
     let userContent = question;
     if (previousQAs.length > 0) {
       const context = previousQAs.slice(-3)
-        .map(qa => `Q: ${qa.question}\nA: ${qa.answer.slice(0, 150)}${qa.answer.length > 150 ? '...' : ''}`)
+        .map(qa => `Q: ${qa.question}\nA: ${qa.answer.slice(0, 150)}...`)
         .join("\n\n");
-      userContent = `Previous context:\n${context}\n\nCurrent: ${question}`;
+      userContent = `Context:\n${context}\n\nCurrent: ${question}`;
     }
 
-    // 3. Seleciona modelo por complexidade
-    const isComplex = question.length > 100 || 
-                      question.includes('design') || 
-                      question.includes('architecture');
-    const model = isComplex ? 'gpt-4o-mini' : 'gpt-4o-mini'; // Pode ajustar
+    // Ajusta parâmetros baseado na pergunta
+    const isComplex = question.length > 100 || question.includes('design');
+    const maxTokens = isComplex ? 2048 : (isTailored ? 1024 : 768);
+    const temperature = isTailored ? 0.2 : 0.4; // Mais focado se relevante ao job
 
-    // 4. Estima tokens para logging
-    const estimatedInput = Math.ceil((SYSTEM_PROMPT.length + userContent.length) / 4);
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent }
+      ],
+      max_tokens: maxTokens,
+      temperature
+    });
 
-    if (stream) {
-      // Streaming para UX mais rápida
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      
-      const streamResponse = await openai.chat.completions.create({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
-        max_tokens: isComplex ? 2048 : 1024,
-        stream: true,
-      });
+    const answer = completion.choices[0]?.message?.content || "";
+    const processingTimeMs = Date.now() - startTime;
+    const tokens = completion.usage || { prompt_tokens: 0, completion_tokens: 0 };
+    const cost = estimateCost(tokens.prompt_tokens, tokens.completion_tokens);
 
-      let fullAnswer = '';
-      let tokensOut = 0;
-      
-      for await (const chunk of streamResponse) {
-        const content = chunk.choices[0]?.delta?.content || '';
-        fullAnswer += content;
-        tokensOut += content.length > 0 ? Math.ceil(content.length / 4) : 0;
-        
-        res.write(`data: ${JSON.stringify({ chunk: content })}\n\n`);
-      }
+    // Salva no cache
+    responseCache.set(cacheKey, answer);
 
-      const processingTimeMs = Date.now() - startTime;
-      const cost = estimateCost(estimatedInput, tokensOut, model);
-      
-      // Salva no cache
-      responseCache.set(normalizedQ, fullAnswer);
-      
-      // Async DB write
-      if (sessionId) {
-        db.prepare(
-          "INSERT INTO question_answers (sessionId, question, answer, processingTimeMs, tokensInput, tokensOutput, cost, cached) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        ).run(sessionId, question, fullAnswer, processingTimeMs, estimatedInput, tokensOut, cost, 0).catch(() => {});
-      }
-      
-      res.write(`data: ${JSON.stringify({ done: true, processingTimeMs, cost: cost.toFixed(6) })}\n\n`);
-      res.end();
-      
-    } else {
-      // Non-streaming (mais simples)
-      const completion = await openai.chat.completions.create({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
-        max_tokens: isComplex ? 2048 : 1024,
-      });
+    // Async DB write
+    setTimeout(() => {
+      db.prepare(`
+        INSERT INTO question_answers (sessionId, question, answer, processingTimeMs, tokensInput, tokensOutput, cost, cached, tailored)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(sessionId, question, answer, processingTimeMs, tokens.prompt_tokens, tokens.completion_tokens, cost, 0, isTailored ? 1 : 0)
+        .catch(e => console.warn("DB error:", e));
+    }, 0);
 
-      const answer = completion.choices[0]?.message?.content || "";
-      const processingTimeMs = Date.now() - startTime;
-      const tokensIn = completion.usage?.prompt_tokens || estimatedInput;
-      const tokensOut = completion.usage?.completion_tokens || 0;
-      const cost = estimateCost(tokensIn, tokensOut, model);
-
-      // Salva no cache
-      responseCache.set(normalizedQ, answer);
-
-      // Async DB write
-      if (sessionId) {
-        setTimeout(() => {
-          db.prepare(
-            "INSERT INTO question_answers (sessionId, question, answer, processingTimeMs, tokensInput, tokensOutput, cost, cached) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-          ).run(sessionId, question, answer, processingTimeMs, tokensIn, tokensOut, cost, 0).catch(e => console.warn("DB error:", e));
-        }, 0);
-      }
-
-      res.json({ 
-        answer, 
-        processingTimeMs, 
-        tokens: { input: tokensIn, output: tokensOut },
-        cost: cost.toFixed(6),
-        cached: false
-      });
-    }
+    res.json({ 
+      answer, 
+      processingTimeMs,
+      tokens,
+      cost: cost.toFixed(6),
+      cached: false,
+      tailored: isTailored
+    });
+    
   } catch (err) {
     console.error("❌ Answer error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
+// ─── Export ───
+
 app.get("/api/session/:id/export", (req, res) => {
   try {
-    const session = db.prepare("SELECT * FROM interview_sessions WHERE id = ?").get(req.params.id);
+    const session = db.prepare(`
+      SELECT s.*, j.name as jobName, j.company
+      FROM interview_sessions s
+      LEFT JOIN job_profiles j ON s.jobProfileId = j.id
+      WHERE s.id = ?
+    `).get(req.params.id);
+    
     if (!session) return res.status(404).json({ error: "Session not found" });
     
-    const qas = db.prepare("SELECT * FROM question_answers WHERE sessionId = ? ORDER BY createdAt").all(req.params.id);
+    const qas = db.prepare(`
+      SELECT * FROM question_answers 
+      WHERE sessionId = ? 
+      ORDER BY createdAt
+    `).all(req.params.id);
     
     const duration = session.endedAt 
       ? Math.round((session.endedAt - session.startedAt) / 60000)
@@ -379,6 +481,7 @@ app.get("/api/session/:id/export", (req, res) => {
     
     const markdown = `# Interview Session #${session.id}
 
+**Job:** ${session.jobName || 'General'} ${session.company ? `at ${session.company}` : ''}
 **Date:** ${session.createdAt}
 **Duration:** ${duration} minutes
 **Questions:** ${session.totalQuestions || qas.length}
@@ -386,7 +489,7 @@ app.get("/api/session/:id/export", (req, res) => {
 
 ${qas.map((qa, i) => `
 ## ${i + 1}. ${qa.question}
-${qa.cached ? '*(from cache)*' : ''}
+${qa.cached ? '*(from cache)*' : ''} ${qa.tailored ? '*(tailored to job)*' : ''}
 
 ${qa.answer}
 
@@ -407,12 +510,12 @@ ${qa.answer}
 const PORT = parseInt(process.env.PORT || "3001");
 app.listen(PORT, () => {
   console.log(`
-╔══════════════════════════════════════════╗
-║   ⚡ Interview Agent - Optimized         ║
-╠══════════════════════════════════════════╣
-║   API:      http://localhost:${PORT}        ║
-║   Cache:    LRU (200 items)             ║
-║   DB:       WAL mode enabled             ║
-╚══════════════════════════════════════════╝
+╔════════════════════════════════════════════════╗
+║   ⚡ Interview Agent v2.0 - Job Context        ║
+╠════════════════════════════════════════════════╣
+║   API:      http://localhost:${PORT}              ║
+║   Features: Job Profiles • Smart Cache • Cost  ║
+║             Tracking • Tailored Responses      ║
+╚════════════════════════════════════════════════╝
   `);
 });
