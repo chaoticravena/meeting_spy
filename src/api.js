@@ -1,66 +1,86 @@
-// src/api.js - Cliente API completo
-const BASE = "/api";
+// src/api.js
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-async function request(path, options = {}, timeout = 30000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
-      ...options,
+class InterviewAPI {
+  constructor() {
+    this.baseURL = API_URL;
+  }
+
+  // Upload de áudio com progresso
+  async uploadAudio(audioBlob, sessionId, isFinal = false) {
+    const formData = new FormData();
+    formData.append('audio', audioBlob, `chunk-${Date.now()}.webm`);
+    formData.append('sessionId', sessionId);
+    formData.append('timestamp', Date.now().toString());
+    formData.append('isFinal', isFinal.toString());
+
+    const response = await fetch(`${this.baseURL}/api/transcribe`, {
+      method: 'POST',
+      body: formData,
     });
-    
-    clearTimeout(timeoutId);
-    
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || "Request failed");
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
-    
-    return res.json();
-  } catch (err) {
-    clearTimeout(timeoutId);
-    if (err.name === 'AbortError') throw new Error('Request timeout');
-    throw err;
+
+    return response.json();
+  }
+
+  // Streaming de resposta (Server-Sent Events)
+  async *streamAnswer(transcription, sessionId) {
+    const response = await fetch(`${this.baseURL}/api/answer-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        transcription, 
+        sessionId,
+        maxTokens: 400, // Limita para respostas rápidas
+        temperature: 0.3
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') return;
+          
+          try {
+            const parsed = JSON.parse(data);
+            yield parsed;
+          } catch (e) {
+            // Ignora linhas inválidas
+          }
+        }
+      }
+    }
+  }
+
+  // Buscar histórico
+  async getHistory(sessionId) {
+    const response = await fetch(`${this.baseURL}/api/history/${sessionId}`);
+    return response.json();
+  }
+
+  // Limpar sessão
+  async clearSession(sessionId) {
+    await fetch(`${this.baseURL}/api/session/${sessionId}`, {
+      method: 'DELETE'
+    });
   }
 }
 
-export const api = {
-  // Health & Stats
-  health: () => request("/health", {}, 5000),
-  getStats: () => request("/stats", {}, 5000),
-  
-  // Job Profiles
-  listJobs: () => request("/jobs"),
-  getDefaultJob: () => request("/jobs/default"),
-  createJob: (data) => request("/jobs", { method: "POST", body: JSON.stringify(data) }, 10000),
-  deleteJob: (id) => request(`/jobs/${id}`, { method: "DELETE" }),
-  
-  // Sessions
-  createSession: (jobProfileId) => request("/session/create", {
-    method: "POST",
-    body: JSON.stringify({ jobProfileId })
-  }, 5000),
-  endSession: (sessionId, totalQuestions) => request("/session/end", {
-    method: "POST",
-    body: JSON.stringify({ sessionId, totalQuestions })
-  }, 5000),
-  
-  // Voice & AI
-  transcribe: (audioBase64, mimeType = "audio/webm", language = "en", estimatedDuration = 0) =>
-    request("/voice/transcribe", {
-      method: "POST",
-      body: JSON.stringify({ audioBase64, mimeType, language, estimatedDuration })
-    }, 15000),
-  
-  answer: (question, sessionId, previousQAs = []) =>
-    request("/ai/answer", {
-      method: "POST",
-      body: JSON.stringify({ question, sessionId, previousQAs })
-    }, 45000),
-  
-  // Export
-  exportSession: (id) => request(`/session/${id}/export`, {}, 10000),
-};
+export default new InterviewAPI();
