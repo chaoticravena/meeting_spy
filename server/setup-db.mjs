@@ -1,4 +1,4 @@
-// server/setup-db.mjs
+// server/setup-db.mjs - Setup do banco de dados v2.1
 import Database from "better-sqlite3";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -8,14 +8,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "..", "data");
 mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(join(DATA_DIR, "interview-agent.db"));
+const DB_PATH = join(DATA_DIR, "interview-agent.db");
+const db = new Database(DB_PATH);
 
 // Enable WAL mode for better performance
 db.pragma("journal_mode = WAL");
 
 console.log("📦 Setting up database...");
 
-// Create tables
+// Create tables (v2.1 with followUpQuestion and cloudCostEstimate)
 db.exec(`
   CREATE TABLE IF NOT EXISTS job_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,6 +46,8 @@ db.exec(`
     sessionId INTEGER NOT NULL,
     question TEXT NOT NULL,
     answer TEXT NOT NULL,
+    followUpQuestion TEXT,
+    cloudCostEstimate TEXT,
     processingTimeMs INTEGER,
     tokensInput INTEGER,
     tokensOutput INTEGER,
@@ -61,75 +64,25 @@ db.exec(`
 
 console.log("✅ Database setup complete");
 
-// Check if we need to migrate old data
-const hasOldTable = db.prepare(`
-  SELECT name FROM sqlite_master 
-  WHERE type='table' AND name='interview_sessions'
-`).get();
+// Migration: Add new columns if they don't exist (for v2.0 → v2.1)
+const tableInfo = db.prepare("PRAGMA table_info(question_answers)").all();
+const hasFollowUp = tableInfo.some(col => col.name === 'followUpQuestion');
+const hasCostEstimate = tableInfo.some(col => col.name === 'cloudCostEstimate');
 
-if (hasOldTable) {
-  // Check if jobProfileId column exists
-  const tableInfo = db.prepare("PRAGMA table_info(interview_sessions)").all();
-  const hasJobProfileId = tableInfo.some(col => col.name === 'jobProfileId');
+if (!hasFollowUp || !hasCostEstimate) {
+  console.log("🔄 Migrating database to v2.1...");
   
-  if (!hasJobProfileId) {
-    console.log("🔄 Migrating database to v2.0...");
-    
-    // Backup old data
-    db.exec(`
-      ALTER TABLE interview_sessions RENAME TO interview_sessions_old;
-      ALTER TABLE question_answers RENAME TO question_answers_old;
-    `);
-    
-    // Recreate with new schema
-    db.exec(`
-      CREATE TABLE interview_sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        jobProfileId INTEGER,
-        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'paused', 'completed')),
-        startedAt INTEGER NOT NULL,
-        endedAt INTEGER,
-        totalQuestions INTEGER DEFAULT 0,
-        totalCost REAL DEFAULT 0,
-        createdAt TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (jobProfileId) REFERENCES job_profiles(id)
-      );
-      
-      CREATE TABLE question_answers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sessionId INTEGER NOT NULL,
-        question TEXT NOT NULL,
-        answer TEXT NOT NULL,
-        processingTimeMs INTEGER,
-        tokensInput INTEGER,
-        tokensOutput INTEGER,
-        cost REAL,
-        cached BOOLEAN DEFAULT 0,
-        tailored BOOLEAN DEFAULT 0,
-        createdAt TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (sessionId) REFERENCES interview_sessions(id)
-      );
-    `);
-    
-    // Migrate data
-    db.exec(`
-      INSERT INTO interview_sessions (id, status, startedAt, endedAt, totalQuestions, createdAt)
-      SELECT id, status, startedAt, endedAt, totalQuestions, createdAt 
-      FROM interview_sessions_old;
-      
-      INSERT INTO question_answers (id, sessionId, question, answer, processingTimeMs, createdAt)
-      SELECT id, sessionId, question, answer, processingTimeMs, createdAt 
-      FROM question_answers_old;
-    `);
-    
-    // Drop old tables
-    db.exec(`
-      DROP TABLE interview_sessions_old;
-      DROP TABLE question_answers_old;
-    `);
-    
-    console.log("✅ Migration complete");
+  if (!hasFollowUp) {
+    db.prepare("ALTER TABLE question_answers ADD COLUMN followUpQuestion TEXT").run();
+    console.log("  + Added followUpQuestion column");
   }
+  
+  if (!hasCostEstimate) {
+    db.prepare("ALTER TABLE question_answers ADD COLUMN cloudCostEstimate TEXT").run();
+    console.log("  + Added cloudCostEstimate column");
+  }
+  
+  console.log("✅ Migration complete");
 }
 
 db.close();
