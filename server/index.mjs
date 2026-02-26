@@ -61,34 +61,36 @@ app.use(express.json({ limit: "50mb" }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
 
 // ─── System Prompt ───
-const DATA_ENGINEERING_SYSTEM_PROMPT = `Você é um especialista sênior em Engenharia de Dados com mais de 15 anos de experiência. Você está ajudando alguém durante uma entrevista técnica de Engenharia de Dados.
+const DATA_ENGINEERING_SYSTEM_PROMPT = `You are a senior Data Engineering expert with over 15 years of experience. You are helping someone during a live Data Engineering technical interview.
 
-Suas áreas de expertise incluem:
-- **SQL avançado**: CTEs, window functions, query optimization, indexação, particionamento
-- **Python para dados**: PySpark, Pandas, Polars, Dask, NumPy
-- **Apache Spark**: arquitetura, otimização, Spark SQL, Structured Streaming, tuning
-- **Orquestração**: Apache Airflow, Dagster, Prefect, Luigi, Mage
-- **Data Warehousing**: Snowflake, BigQuery, Redshift, Databricks, modelagem dimensional (Kimball/Inmon)
+Your areas of expertise include:
+- **Advanced SQL**: CTEs, window functions, query optimization, indexing, partitioning
+- **Python for data**: PySpark, Pandas, Polars, Dask, NumPy
+- **Apache Spark**: architecture, optimization, Spark SQL, Structured Streaming, tuning
+- **Orchestration**: Apache Airflow, Dagster, Prefect, Luigi, Mage
+- **Data Warehousing**: Snowflake, BigQuery, Redshift, Databricks, dimensional modeling (Kimball/Inmon)
 - **Streaming**: Apache Kafka, Kinesis, Flink, Spark Streaming, event-driven architecture
 - **Cloud**: AWS (S3, Glue, EMR, Athena, Lambda, Step Functions), GCP (BigQuery, Dataflow, Pub/Sub), Azure (Data Factory, Synapse, Databricks)
 - **Data Lakes & Lakehouses**: Delta Lake, Apache Iceberg, Apache Hudi, medallion architecture
 - **ETL/ELT**: design patterns, data quality, data lineage, data contracts
-- **DevOps para dados**: CI/CD, IaC (Terraform), Docker, Kubernetes, observabilidade
-- **Governança**: data catalog, data mesh, data quality frameworks (Great Expectations, Soda)
-- **Modelagem**: star schema, snowflake schema, OBT, data vault, SCD types
-- **Bancos de dados**: PostgreSQL, MySQL, MongoDB, Cassandra, DynamoDB, Redis, ClickHouse
-- **Ferramentas modernas**: dbt, Fivetran, Airbyte, Stitch, Monte Carlo, Atlan
+- **DevOps for data**: CI/CD, IaC (Terraform), Docker, Kubernetes, observability
+- **Governance**: data catalog, data mesh, data quality frameworks (Great Expectations, Soda)
+- **Modeling**: star schema, snowflake schema, OBT, data vault, SCD types
+- **Databases**: PostgreSQL, MySQL, MongoDB, Cassandra, DynamoDB, Redis, ClickHouse
+- **Modern tools**: dbt, Fivetran, Airbyte, Stitch, Monte Carlo, Atlan
 
-REGRAS IMPORTANTES:
-1. Responda de forma DIRETA e CONCISA - a pessoa está em uma entrevista ao vivo
-2. Use português brasileiro
-3. Comece com a resposta principal e depois adicione detalhes se necessário
-4. Para perguntas de código, forneça exemplos práticos e curtos
-5. Mencione trade-offs e boas práticas quando relevante
-6. Se a pergunta for sobre system design, estruture: requisitos → arquitetura → componentes → trade-offs
-7. Não use saudações ou despedidas - vá direto ao ponto
-8. Formate com markdown para facilitar a leitura rápida
-9. Se detectar que a pergunta é sobre um cenário específico, dê a resposta mais prática possível`;
+IMPORTANT RULES:
+1. Answer DIRECTLY and CONCISELY - the person is in a live interview
+2. ALWAYS respond in ENGLISH, regardless of the question language
+3. Start with the main answer and add details only if necessary
+4. For coding questions, provide practical and short examples
+5. Mention trade-offs and best practices when relevant
+6. If the question is about system design, structure: requirements → architecture → components → trade-offs
+7. No greetings or farewells - get straight to the point
+8. Use markdown formatting for quick reading
+9. If you detect the question is about a specific scenario, give the most practical answer possible
+
+Remember: The interviewer may be testing the candidate's English communication skills, so your response MUST be in English.`;
 
 // ─── API Routes ───
 
@@ -103,7 +105,7 @@ app.post("/api/session/create", (req, res) => {
     const stmt = db.prepare("INSERT INTO interview_sessions (startedAt, status, totalQuestions) VALUES (?, 'active', 0)");
     const result = stmt.run(Date.now());
     const session = db.prepare("SELECT * FROM interview_sessions WHERE id = ?").get(result.lastInsertRowid);
-    console.log(`📋 Sessão #${session.id} iniciada`);
+    console.log(`📋 Session #${session.id} started`);
     res.json(session);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -119,7 +121,7 @@ app.post("/api/session/end", (req, res) => {
     const session = db.prepare("SELECT * FROM interview_sessions WHERE id = ?").get(sessionId);
     if (session) {
       const durationMin = Math.round((session.endedAt - session.startedAt) / 60000);
-      console.log(`✅ Sessão #${session.id} finalizada | Duração: ${durationMin}min | Perguntas: ${totalQuestions}`);
+      console.log(`✅ Session #${session.id} ended | Duration: ${durationMin}min | Questions: ${totalQuestions}`);
     }
     res.json(session);
   } catch (err) {
@@ -157,13 +159,49 @@ app.get("/api/session/:id/qas", (req, res) => {
   }
 });
 
+// Export session to markdown
+app.get("/api/session/:id/export", (req, res) => {
+  try {
+    const session = db.prepare("SELECT * FROM interview_sessions WHERE id = ?").get(req.params.id);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    
+    const qas = db.prepare("SELECT * FROM question_answers WHERE sessionId = ? ORDER BY createdAt").all(req.params.id);
+    
+    const duration = session.endedAt 
+      ? Math.round((session.endedAt - session.startedAt) / 60000)
+      : Math.round((Date.now() - session.startedAt) / 60000);
+    
+    const markdown = `# Interview Session #${session.id} - ${session.createdAt}
+
+**Status:** ${session.status}
+**Duration:** ${duration} minutes
+**Total Questions:** ${session.totalQuestions || qas.length}
+
+${qas.map((qa, i) => `
+## ${i + 1}. ${qa.question}
+
+${qa.answer}
+
+*Processing time: ${qa.processingTimeMs}ms*
+
+---
+`).join('')}`;
+
+    res.setHeader('Content-Type', 'text/markdown');
+    res.setHeader('Content-Disposition', `attachment; filename="interview-${session.id}-${session.createdAt.split('T')[0]}.md"`);
+    res.send(markdown);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Transcribe audio
 app.post("/api/voice/transcribe", async (req, res) => {
   try {
     const { audioBase64, mimeType = "audio/webm", language = "pt" } = req.body;
 
     if (!audioBase64) {
-      return res.status(400).json({ error: "audioBase64 é obrigatório" });
+      return res.status(400).json({ error: "audioBase64 is required" });
     }
 
     const audioBuffer = Buffer.from(audioBase64, "base64");
@@ -171,7 +209,7 @@ app.post("/api/voice/transcribe", async (req, res) => {
     // Check size
     const sizeMB = audioBuffer.length / (1024 * 1024);
     if (sizeMB > 16) {
-      return res.status(400).json({ error: `Arquivo muito grande: ${sizeMB.toFixed(1)}MB (máximo 16MB)` });
+      return res.status(400).json({ error: `File too large: ${sizeMB.toFixed(1)}MB (max 16MB)` });
     }
 
     // Create a File object for OpenAI
@@ -182,7 +220,7 @@ app.post("/api/voice/transcribe", async (req, res) => {
       model: "whisper-1",
       language: language,
       response_format: "verbose_json",
-      prompt: "Transcreva a pergunta técnica de uma entrevista de Engenharia de Dados. Termos técnicos comuns: SQL, Spark, Kafka, Airflow, ETL, pipeline, data lake, data warehouse, Python, PySpark, dbt, Snowflake, BigQuery, Redshift, Delta Lake, Iceberg.",
+      prompt: "Transcribe the technical question from a Data Engineering interview. Common technical terms: SQL, Spark, Kafka, Airflow, ETL, pipeline, data lake, data warehouse, Python, PySpark, dbt, Snowflake, BigQuery, Redshift, Delta Lake, Iceberg.",
     });
 
     res.json({
@@ -191,7 +229,7 @@ app.post("/api/voice/transcribe", async (req, res) => {
       duration: transcription.duration,
     });
   } catch (err) {
-    console.error("❌ Erro na transcrição:", err.message);
+    console.error("❌ Transcription error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -202,7 +240,7 @@ app.post("/api/ai/answer", async (req, res) => {
     const { question, sessionId, previousQAs = [] } = req.body;
 
     if (!question) {
-      return res.status(400).json({ error: "question é obrigatória" });
+      return res.status(400).json({ error: "question is required" });
     }
 
     const startTime = Date.now();
@@ -212,11 +250,11 @@ app.post("/api/ai/answer", async (req, res) => {
     if (previousQAs.length > 0) {
       const recentQAs = previousQAs.slice(-5);
       const context = recentQAs
-        .map((qa) => `Pergunta anterior: ${qa.question}\nResposta dada: ${qa.answer}`)
+        .map((qa) => `Previous question: ${qa.question}\nAnswer given: ${qa.answer}`)
         .join("\n\n");
-      userContent = `Contexto das perguntas anteriores da entrevista:\n${context}\n\nPergunta atual do entrevistador:\n${question}`;
+      userContent = `Context from previous interview questions:\n${context}\n\nCurrent interviewer question:\n${question}`;
     } else {
-      userContent = `Pergunta do entrevistador:\n${question}`;
+      userContent = `Interviewer question:\n${question}`;
     }
 
     const completion = await openai.chat.completions.create({
@@ -237,13 +275,13 @@ app.post("/api/ai/answer", async (req, res) => {
         db.prepare("INSERT INTO question_answers (sessionId, question, answer, processingTimeMs) VALUES (?, ?, ?, ?)")
           .run(sessionId, question, answer, processingTimeMs);
       } catch (e) {
-        console.warn("⚠️ Falha ao salvar Q&A:", e.message);
+        console.warn("⚠️ Failed to save Q&A:", e.message);
       }
     }
 
     res.json({ answer, processingTimeMs });
   } catch (err) {
-    console.error("❌ Erro na geração de resposta:", err.message);
+    console.error("❌ Answer generation error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -253,11 +291,11 @@ const PORT = parseInt(process.env.PORT || "3001");
 app.listen(PORT, () => {
   console.log("");
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║   ⚡ Interview Agent - Servidor Local    ║");
+  console.log("║   ⚡ Interview Agent - Local Server    ║");
   console.log("╠══════════════════════════════════════════╣");
   console.log(`║   API:      http://localhost:${PORT}        ║`);
   console.log(`║   Frontend: http://localhost:5173        ║`);
-  console.log("║   Banco:    ./data/interview-agent.db   ║");
+  console.log("║   Database: ./data/interview-agent.db   ║");
   console.log("╚══════════════════════════════════════════╝");
   console.log("");
 });
