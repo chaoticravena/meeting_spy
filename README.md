@@ -1,94 +1,28 @@
-# Interview Agent - Versão Local
+**Interview Agent - Local Version**
 
-Assistente em tempo real para entrevistas técnicas de **Engenharia de Dados**. Captura o áudio da entrevista, transcreve as perguntas automaticamente e gera respostas técnicas especializadas usando IA.
-
-## Pré-requisitos
-
-- **Node.js** 18 ou superior
-- **Chave da API da OpenAI** (para Whisper + GPT) — obtenha em [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-
-## Setup Rápido
-
-```bash
-# 1. Instalar dependências
+Real-time assistant for technical Data Engineering interviews. It captures interview audio, automatically transcribes questions, and generates specialized technical answers using AI.PrerequisitesNode.js 18 or higherOpenAI API Key (for Whisper + GPT) — get it at platform.openai.com/api-keysQuick SetupBash# 1. Install dependencies
 npm install
 
-# 2. Configurar variáveis de ambiente
+# 2. Configure environment variables
 cp .env.example .env
-# Edite o arquivo .env e coloque sua OPENAI_API_KEY
+# Edit the .env file and add your OPENAI_API_KEY
 
-# 3. Iniciar o app (servidor + frontend)
+# 3. Start the app (server + frontend)
 npm run dev
-```
-
-Acesse **http://localhost:5173** no navegador.
-
-## Como Usar
-
-1. Abra o app no navegador (Chrome recomendado)
-2. Escolha a fonte de áudio:
-   - **Microfone**: captura o áudio ambiente (útil se o entrevistador fala pelo alto-falante)
-   - **Áudio do Sistema**: captura o que sai do computador (ideal para Zoom, Google Meet, Teams). Ao selecionar, marque "Compartilhar áudio" na janela de seleção de tela/aba
-3. O app captura trechos de áudio a cada 10 segundos, transcreve e gera a resposta automaticamente
-4. As respostas aparecem em cards colapsáveis — clique para expandir/recolher
-5. Use os controles para **Pausar**, **Retomar** ou **Encerrar** a sessão
-
-## Estrutura do Projeto
-
-```
-interview-agent-local/
+Access http://localhost:5173 in your browser.How to UseOpen the app in your browser (Chrome recommended).Choose the audio source:Microphone: captures ambient audio (useful if the interviewer is speaking through speakers).System Audio: captures computer output (ideal for Zoom, Google Meet, Teams). When selecting, check "Share audio" in the screen/tab selection window.The app captures audio snippets every 10 seconds, transcribes them, and generates the answer automatically.Answers appear in collapsible cards — click to expand/collapse.Use the controls to Pause, Resume, or End the session.Project Structureinterview-agent-local/
 ├── server/
-│   ├── index.mjs          # Servidor Express (API REST)
-│   └── setup-db.mjs       # Script de setup do banco SQLite
+│   ├── index.mjs          # Express Server (REST API)
+│   └── setup-db.mjs       # SQLite DB setup script
 ├── src/
-│   ├── App.jsx             # Interface principal
-│   ├── api.js              # Cliente HTTP para o backend
-│   ├── useAudioCapture.js  # Hook de captura de áudio
-│   ├── main.jsx            # Entry point React
-│   └── index.css           # Estilos (Tailwind + tema escuro)
-├── data/                   # Banco SQLite (criado automaticamente)
-├── .env.example            # Template de variáveis de ambiente
+│   ├── App.jsx             # Main Interface
+│   ├── api.js              # HTTP Client for backend
+│   ├── useAudioCapture.js  # Audio capture hook
+│   ├── main.jsx            # React entry point
+│   └── index.css           # Styles (Tailwind + dark theme)
+├── data/                   # SQLite Database (automatically created)
+├── .env.example            # Environment variables template
 ├── package.json
 ├── vite.config.js
 ├── tailwind.config.js
 └── postcss.config.js
-```
-
-## Tecnologias
-
-| Componente | Tecnologia |
-|---|---|
-| Frontend | React 19 + Tailwind CSS 3 + Vite |
-| Backend | Express + SQLite (better-sqlite3) |
-| Transcrição | OpenAI Whisper API |
-| Respostas IA | OpenAI GPT-4o-mini |
-| Áudio | Web Audio API + MediaRecorder |
-
-## Variáveis de Ambiente
-
-| Variável | Obrigatória | Descrição |
-|---|---|---|
-| `OPENAI_API_KEY` | Sim | Chave da API da OpenAI |
-| `PORT` | Não | Porta do servidor (padrão: 3001) |
-| `DEFAULT_LANGUAGE` | Não | Idioma para transcrição (padrão: pt) |
-
-## Custos Estimados (OpenAI)
-
-- **Whisper**: ~$0.006/minuto de áudio
-- **GPT-4o-mini**: ~$0.15/1M tokens input, ~$0.60/1M tokens output
-- Uma sessão de 1 hora com 20 perguntas custa aproximadamente **$0.10 a $0.30**
-
-## Dicas
-
-- Use **Chrome** para melhor compatibilidade com captura de áudio do sistema
-- Para captura de áudio do sistema, selecione a **aba do navegador** onde está a videochamada (não a tela inteira)
-- O banco de dados SQLite fica em `data/interview-agent.db` e persiste entre sessões
-- Para limpar o histórico, basta deletar o arquivo do banco
-
-## Solução de Problemas
-
-**"Nenhuma faixa de áudio capturada"**: Ao usar áudio do sistema, certifique-se de marcar a opção "Compartilhar áudio" na janela de seleção.
-
-**"Permissão de áudio negada"**: Verifique se o navegador tem permissão para acessar o microfone nas configurações do site.
-
-**Transcrições imprecisas**: O Whisper funciona melhor com áudio claro. Reduza ruído de fundo e aumente o volume do entrevistador.
+TechnologiesComponentTechnologyFrontendReact 19 + Tailwind CSS 3 + ViteBackendExpress + SQLite (better-sqlite3)TranscriptionOpenAI Whisper APIAI AnswersOpenAI GPT-4o-miniAudioWeb Audio API + MediaRecorderEnvironment VariablesVariableRequiredDescriptionOPENAI_API_KEYYesOpenAI API KeyPORTNoServer port (default: 3001)DEFAULT_LANGUAGENoTranscription language (default: pt)Estimated Costs (OpenAI)Whisper: ~$0.006/minute of audioGPT-4o-mini: ~$0.15/1M input tokens, ~$0.60/1M output tokensA 1-hour session with 20 questions costs approximately $0.10 to $0.30.TipsUse Chrome for better compatibility with system audio capture.For system audio capture, select the browser tab where the video call is active (not the whole screen).The SQLite database is located at data/interview-agent.db and persists between sessions.To clear history, simply delete the database file.Troubleshooting"No audio track captured": When using system audio, ensure you check the "Share audio" option in the selection window."Audio permission denied": Check if the browser has permission to access the microphone in the site settings.Inaccurate transcriptions: Whisper works best with clear audio. Reduce background noise and increase the interviewer's volume.
