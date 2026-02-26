@@ -1,115 +1,54 @@
-// src/components/QACard.jsx - Componente completo
-import { useState } from 'react';
+import { useState } from "react";
 
-export function QACard({ qa, isExpanded, onToggle, isStarred, onStar }) {
+export function QACard({ qa, isExpanded, onToggle, isStarred, onStar, isStreaming = false }) {
   const [copied, setCopied] = useState(false);
-  const [showCost, setShowCost] = useState(false);
 
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(qa.answer);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Copy failed:', err);
-    }
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
 
-  // Separa a resposta técnica da estimativa de custo
-  const technicalAnswer = qa.answer.split('### 💰 Estimated Cloud Cost')[0].trim();
-  const hasCostEstimate = qa.answer.includes('### 💰 Estimated Cloud Cost');
-  
-  // Extrai follow-up
-  const followUp = qa.followUpQuestion || 
-    (qa.answer.match(/💡 \*\*Follow-up:\*\* (.+?)(?:\n|$)/)?.[1]);
-
   return (
-    <div className={`qa-card ${qa.cached ? 'cached' : ''} ${qa.tailored ? 'tailored' : ''} ${isStarred ? 'starred' : ''}`}>
-      <div className="qa-header" onClick={onToggle}>
-        <span className="qa-number">#{qa.id}</span>
-        <span className="qa-preview">{qa.question}</span>
+    <div className={`qa-card ${isExpanded ? "expanded" : ""} ${isStreaming ? "streaming" : ""}`}>
+      <div className="qa-header" onClick={isStreaming ? null : onToggle}>
+        <span className="qa-num">{isStreaming ? 'LIVE' : `Q${qa.id}`}</span>
+        <span className="qa-q">{qa.question.slice(0, 80)}...</span>
         <div className="qa-badges">
-          {qa.cached && <span className="badge cache" title="From cache">⚡</span>}
-          {qa.tailored && <span className="badge tailored" title="Tailored to job">🎯</span>}
-          {hasCostEstimate && <span className="badge cost" title="Cost estimate">💰</span>}
-          {followUp && <span className="badge followup" title="Has follow-up">💡</span>}
-          <button 
-            className={`star-btn ${isStarred ? 'active' : ''}`}
-            onClick={(e) => { e.stopPropagation(); onStar(); }}
-          >
-            {isStarred ? '★' : '☆'}
-          </button>
-          <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
+          {isStreaming && <span className="badge streaming">STREAMING</span>}
+          {qa.cached && <span className="badge cache">CACHE</span>}
+          {qa.tailored && <span className="badge tailored">TAILORED</span>}
+          {qa.processingTimeMs > 0 && (
+            <span className="badge time">{qa.processingTimeMs}ms</span>
+          )}
         </div>
+        {!isStreaming && (
+          <button onClick={(e) => { e.stopPropagation(); onStar(); }}>
+            {isStarred ? "★" : "☆"}
+          </button>
+        )}
+        {!isStreaming && <span className="qa-toggle">{isExpanded ? "▼" : "▶"}</span>}
       </div>
-      
-      {isExpanded && (
+      {(isExpanded || isStreaming) && (
         <div className="qa-body">
-          <div className="qa-question-section">
-            <strong>Question:</strong>
-            <p>{qa.question}</p>
+          <div className="qa-section">
+            <strong>Q:</strong> {qa.question}
           </div>
-          
-          <div className="qa-answer-section">
+          <div className="qa-section answer">
             <div className="answer-header">
-              <strong>Answer:</strong>
-              <button 
-                className={`copy-btn ${copied ? 'copied' : ''}`}
-                onClick={copy}
-              >
-                {copied ? '✓ Copied!' : 'Copy'}
+              <strong>A:</strong>
+              <button onClick={() => copyToClipboard(qa.answer)} className="copy-btn">
+                {copied ? "✓ Copied!" : "Copy"}
               </button>
             </div>
-            <div className="answer-content markdown-body">
-              {technicalAnswer.split('\n').map((line, i) => (
+            <div className="markdown-body">
+              {qa.answer.split("\n").map((line, i) => (
                 <p key={i}>{line}</p>
               ))}
-            </div>
-            
-            {/* Follow-up Question */}
-            {followUp && (
-              <div className="follow-up-section">
-                <div className="follow-up-header">
-                  <span className="icon">💡</span>
-                  <strong>Suggested Follow-up Question</strong>
-                </div>
-                <p className="follow-up-text">{followUp}</p>
-                <button 
-                  className="btn-use-followup"
-                  onClick={() => navigator.clipboard.writeText(followUp)}
-                >
-                  Copy to Ask
-                </button>
-              </div>
-            )}
-            
-            {/* Cloud Cost Estimate */}
-            {hasCostEstimate && (
-              <div className="cost-section">
-                <div 
-                  className="cost-header"
-                  onClick={() => setShowCost(!showCost)}
-                >
-                  <span className="icon">💰</span>
-                  <strong>Cloud Cost Estimate</strong>
-                  <span className="toggle">{showCost ? '▼' : '▶'}</span>
-                </div>
-                {showCost && (
-                  <div className="cost-content markdown-body">
-                    {qa.answer.split('### 💰 Estimated Cloud Cost')[1].split('\n\n>')[0].split('\n').map((line, i) => (
-                      <p key={i}>{line}</p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            
-            <div className="answer-meta">
-              {qa.processingTimeMs > 0 && <span>⏱ {qa.processingTimeMs}ms</span>}
-              {qa.cost && <span>💵 ${qa.cost}</span>}
-              {qa.tokens && <span>📝 {qa.tokens.input}→{qa.tokens.output}</span>}
+              {isStreaming && <span className="inline-block w-2 h-4 bg-purple-400 ml-1 animate-pulse" />}
             </div>
           </div>
+          {qa.cost > 0 && <span className="cost-tag">Cost: ${qa.cost.toFixed(5)}</span>}
         </div>
       )}
     </div>
